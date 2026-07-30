@@ -36,6 +36,11 @@ local BASE   = ("https://raw.githubusercontent.com/%s/%s/mining/"):format(REPO, 
 
 local OVERRIDES = "/fleet.cfg"
 
+-- Mirrors config.protocol's default in lib/config.lua. Naming the default is
+-- what lets this skip writing an overrides file at all for a single-fleet
+-- setup, so there is nothing extra to explain to anyone reading the tree later.
+local DEFAULT_FLEET = "mining"
+
 --------------------------------------------------------------------------------
 
 local function colour(c)
@@ -176,18 +181,18 @@ if not FLEET then
     say("Enter to keep it, or type a new name:", colours.yellow)
   else
     say("Fleet name? Computers only talk to others on the", colours.yellow)
-    say("same one. Enter for the default 'mining':", colours.yellow)
+    say("same one. Enter for '" .. DEFAULT_FLEET .. "':", colours.yellow)
   end
   term.setTextColour(colours.white)
   FLEET = read()
 end
 
 FLEET = sanitise(FLEET or "")
-if FLEET == "" then FLEET = existing or "mining" end
+if FLEET == "" then FLEET = existing or DEFAULT_FLEET end
 
 -- Only write the file when it says something other than the default, so a
 -- single-fleet setup has nothing extra to explain.
-if FLEET ~= "mining" then
+if FLEET ~= DEFAULT_FLEET then
   local f = fs.open(OVERRIDES, "w")
   if f then
     f.write(("-- Written by install.lua. Not in manifest.txt, so `update`\n"
@@ -196,7 +201,7 @@ if FLEET ~= "mining" then
       :format(FLEET))
     f.close()
   end
-elseif fs.exists(OVERRIDES) and existing and existing ~= "mining" then
+elseif fs.exists(OVERRIDES) and existing and existing ~= DEFAULT_FLEET then
   -- Explicitly moved back to the default: drop the override rather than
   -- leaving a file that says one thing while the fleet is on another.
   fs.delete(OVERRIDES)
