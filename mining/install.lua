@@ -181,6 +181,19 @@ elseif role == "server" then
 end
 
 print()
-say("Reboot to start? (y/N)", colours.yellow)
-local event, key = os.pullEvent("char")
-if key == "y" or key == "Y" then os.reboot() end
+say("Reboot to start? (y/N, continues on its own in 15s)", colours.yellow)
+
+-- Timed rather than a bare pullEvent. Installing across a row of turtles is a
+-- reasonable thing to script, and a prompt that waits forever turns that into a
+-- row of turtles sitting at a question nobody is there to answer.
+local deadline = os.startTimer(15)
+while true do
+  local event, a = os.pullEvent()
+  if event == "char" then
+    if a == "y" or a == "Y" then os.reboot() end
+    break
+  elseif event == "timer" and a == deadline then
+    say("No answer; leaving it to you.", colours.grey)
+    break
+  end
+end
