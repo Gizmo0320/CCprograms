@@ -127,8 +127,16 @@ lists, so a per-fleet setting kept in one would survive exactly until the first
 update and then quietly reunite two fleets meant to be separate.
 
 `config.protocol` is what isolates one fleet from another. There is no port to
-set: rednet fixes its channels (a computer's own id, and 65535 for broadcasts)
-and filters delivery by protocol string, so the protocol *is* the port.
+set: `rednet.open` always opens the computer's own id and 65535, and the
+protocol is filtered at the **receive** end (see `rednet.receive` in the rom).
+Isolation is therefore logical, not physical -- both fleets still transmit on
+the same channels, and a `repeat` relay carries both.
+
+`server.lua` claims the fleet with `rednet.host(config.protocol, "fleet")`,
+which errors if another computer already holds it. That is a deliberate hard
+stop: two servers on one fleet would both dispatch and both reconcile, and
+nothing would look wrong until two turtles turned up in the same lane. It also
+makes the server findable with `rednet.lookup`.
 
 Two things to keep right when adding config:
 

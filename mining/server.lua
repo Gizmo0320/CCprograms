@@ -371,6 +371,32 @@ local function main()
     return
   end
 
+  -- Claim the fleet name on the network. rednet.host errors if another computer
+  -- is already hosting it, and that is exactly the check worth having: two
+  -- servers on one fleet would both dispatch, both reconcile, and the turtles
+  -- would act on whichever order happened to arrive last. Nothing would look
+  -- broken until two turtles turned up in the same lane.
+  --
+  -- It costs a two second lookup at startup, once. A crashed server leaves no
+  -- stale claim behind, because lookup only hears from computers still running.
+  local hosted, hostErr = pcall(rednet.host, config.protocol, "fleet")
+  if not hosted then
+    term.setTextColour(colours.red)
+    print("Another server is already running on fleet '" .. config.protocol .. "'.")
+    term.setTextColour(colours.white)
+    print("")
+    print("Two servers on one fleet both dispatch to the same")
+    print("turtles. Stop the other one, or install this")
+    print("computer on a different fleet:")
+    print("  install.lua --fleet=<name>")
+    print("")
+    print("(" .. tostring(hostErr) .. ")")
+    return
+  end
+
+  -- A side effect worth having: any computer can now find this one with
+  -- rednet.lookup(protocol, "fleet").
+
   monitor = peripheral.find("monitor")
   if monitor then
     monitor.setTextScale(0.5)

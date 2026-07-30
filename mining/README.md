@@ -14,7 +14,14 @@ pocket (remote.lua) --- submit / cancel / command --> server (server.lua)
 
 The server owns the roster and the job queue, so work survives you putting the
 pocket away. Give it an **ender modem**: wireless is about 64 blocks, and a plain
-modem cannot hear a turtle at Y-50.
+modem cannot hear a turtle at Y-50. Failing that, a computer running CC's own
+`repeat` program between base and the mine relays rednet in both directions.
+
+Only one server per fleet. A second one refuses to start rather than compete —
+it claims the fleet name with `rednet.host`, so two servers dispatching to the
+same turtles is caught at startup instead of showing up later as two turtles in
+one lane. Any computer can find the server with
+`rednet.lookup("<fleet>", "fleet")`.
 
 Turtles stay autonomous. If the server is gone, the pocket says `DIRCT` in its
 header and commands turtles itself — a server whose chunk unloaded must never
@@ -58,11 +65,16 @@ It asks for a **fleet name**. Computers only talk to others on the same one, so
 running two independent setups in one world is a matter of installing them with
 different names — `north` and `south`, say. Press enter for the default.
 
-There is no port number to set: rednet fixes its channels and separates traffic
-by a protocol string instead, so the fleet name *is* the port. The name goes in
-`/fleet.cfg`, which is deliberately **not** in `manifest.txt` — a per-fleet
-setting stored in a file the updater replaces would survive exactly until the
-first update, and then quietly reunite two fleets that were meant to be apart.
+There is no port number to set. `rednet.open` always opens the same two channels
+— the computer's own id, and 65535 for broadcasts — and filters by protocol
+string when a message is *received*. So the fleet name is the port in the sense
+that matters: two fleets never act on each other's messages. They do still share
+the airwaves, so a second fleet adds radio traffic and a `repeat` relay carries
+both.
+
+The name goes in `/fleet.cfg`, which is deliberately **not** in `manifest.txt` —
+a per-fleet setting stored in a file the updater replaces would survive exactly
+until the first update, and then quietly reunite two fleets meant to be apart.
 
 `/fleet.cfg` overrides anything in `lib/config.lua`, not just the protocol:
 

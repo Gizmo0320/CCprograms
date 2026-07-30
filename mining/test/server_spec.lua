@@ -107,6 +107,28 @@ local function countOf(sent, pred)
 end
 
 --------------------------------------------------------------------------------
+say("server: refuses to start if another server owns the fleet")
+--------------------------------------------------------------------------------
+do
+  -- rednet.host errors when a hostname is taken. Two servers on one fleet would
+  -- both dispatch to the same turtles and nothing would look broken until two
+  -- of them turned up in the same lane, so this has to be a hard stop.
+  local realHost = rednet.host
+  rednet.host = function() error("Hostname in use", 2) end
+
+  local sent, _, err = runServer({
+    { from = 7, msg = statusOf(7, "idle") },
+    { from = 99, msg = { type = "submit", pattern = "quarry",
+        params = { w = 8, d = 8, h = 4 }, anchor = { x = 0, y = 64, z = 0 },
+        lanes = 1 } },
+  })
+  rednet.host = realHost
+
+  check(err == nil, "it exits cleanly rather than crashing", err)
+  check(#sent == 0, "and does nothing at all -- no dispatch, no acks", #sent)
+end
+
+--------------------------------------------------------------------------------
 say("server: accepts a submit and dispatches it to an idle turtle")
 --------------------------------------------------------------------------------
 do
