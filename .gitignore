@@ -1,0 +1,8 @@
+# CraftOS-PC writes these into whatever directory it is pointed at.
+test-results.txt
+test-fleet-results.txt
+test-server-results.txt
+test-remote-results.txt
+test-error.txt
+*.state
+*.part

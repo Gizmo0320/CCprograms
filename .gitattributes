@@ -1,0 +1,4 @@
+# Serve LF from raw.githubusercontent regardless of who committed from where.
+# install.lua writes whatever it downloads straight to the turtle's filesystem,
+# so what is in the repo is what CC:T ends up parsing.
+* text=auto eol=lf

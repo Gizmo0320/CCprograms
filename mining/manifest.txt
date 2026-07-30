@@ -1,0 +1,24 @@
+# Files install.lua downloads, one path per line, relative to mining/.
+#
+# The whole tree goes on every computer -- startup.lua works out what it is
+# running on -- so there is one thing to install and no way to end up with the
+# wrong half on the wrong machine. The turtle-only libraries are simply never
+# loaded on a pocket computer.
+#
+# test/spec.lua checks this list against what is actually in the repo, so
+# adding a file and forgetting this line is a test failure rather than an
+# installer that silently ships an incomplete tree.
+
+startup.lua
+miner.lua
+server.lua
+remote.lua
+
+lib/config.lua
+lib/specs.lua
+lib/fleet.lua
+lib/state.lua
+lib/move.lua
+lib/patterns.lua
+lib/veins.lua
+lib/scanner.lua
