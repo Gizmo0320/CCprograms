@@ -117,6 +117,27 @@ Two timing constants earn their keep and are easy to get wrong:
 5. Pure fleet logic (`lib/fleet.lua`), then `server.lua` over it
 6. `remote.lua` UI last — it only renders what the protocol already provides
 
+### Configuration
+
+`lib/config.lua` holds the defaults. `/fleet.cfg` is a Lua file returning a table
+that overrides any of them, written by `install.lua` and editable by hand.
+
+It is deliberately **not** in `manifest.txt`. `update` replaces every file it
+lists, so a per-fleet setting kept in one would survive exactly until the first
+update and then quietly reunite two fleets meant to be separate.
+
+`config.protocol` is what isolates one fleet from another. There is no port to
+set: rednet fixes its channels (a computer's own id, and 65535 for broadcasts)
+and filters delivery by protocol string, so the protocol *is* the port.
+
+Two things to keep right when adding config:
+
+- Derived tables (`config.keep`) are built at the **bottom** of the file, after
+  the overrides are applied, or an overridden `fuel` list would leave `keep`
+  describing the old one.
+- A malformed `/fleet.cfg` is ignored, never fatal. Every program requires this
+  module at load, so throwing would brick the computer with no way back in.
+
 ## Install and update
 
 `install.lua` and `update.lua` both download the list in `manifest.txt` and then

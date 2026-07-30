@@ -1266,6 +1266,80 @@ do
 end
 
 --------------------------------------------------------------------------------
+print("config: /fleet.cfg overrides the defaults and survives an update")
+--------------------------------------------------------------------------------
+do
+  local OVERRIDES = "/fleet.cfg"
+  local had = fs.exists(OVERRIDES)
+  if had then fs.delete(OVERRIDES) end
+
+  local function reload()
+    loaded["lib.config"] = nil
+    return require("lib.config")
+  end
+
+  local base = reload()
+  check(base.protocol == "mining", "the default protocol is 'mining'", base.protocol)
+
+  -- What install.lua writes for a named fleet.
+  local f = fs.open(OVERRIDES, "w")
+  f.write('return {\n  protocol = "mining-north",\n  fuelMargin = 128,\n}\n')
+  f.close()
+
+  local custom = reload()
+  check(custom.protocol == "mining-north", "an override replaces the default",
+    custom.protocol)
+  check(custom.fuelMargin == 128, "for any setting, not just the protocol",
+    custom.fuelMargin)
+  check(custom.stateFile == "/miner.state", "leaving everything else alone",
+    custom.stateFile)
+
+  -- Two fleets are separated by nothing except this string, so it is what
+  -- decides whether they can hear each other at all.
+  check(custom.protocol ~= base.protocol, "so two fleets do not share a protocol")
+
+  -- Derived tables have to be rebuilt after the overrides, or a custom fuel
+  -- list would leave config.keep describing the old one.
+  local f2 = fs.open(OVERRIDES, "w")
+  f2.write('return { fuel = { ["minecraft:blaze_rod"] = true } }\n')
+  f2.close()
+  local derived = reload()
+  check(derived.keep["minecraft:blaze_rod"] == true,
+    "config.keep is rebuilt from an overridden fuel list")
+  check(derived.keep["minecraft:coal"] == nil,
+    "and no longer mentions the default that was replaced")
+
+  -- A broken overrides file must not brick the computer: every program here
+  -- requires this module at load, so throwing would leave no way back in.
+  local f3 = fs.open(OVERRIDES, "w")
+  f3.write("this is not lua {{{\n")
+  f3.close()
+  local okBroken, broken = pcall(reload)
+  check(okBroken, "a malformed overrides file does not throw",
+    not okBroken and tostring(broken) or nil)
+  check(okBroken and broken.protocol == "mining", "it falls back to the defaults",
+    okBroken and broken.protocol)
+
+  fs.delete(OVERRIDES)
+  loaded["lib.config"] = nil
+
+  -- The whole point of keeping it out of the manifest: `update` replaces every
+  -- file it lists, so a per-fleet setting stored in one would survive exactly
+  -- until the first update and then quietly reunite two separate fleets.
+  local mf = fs.open("/manifest.txt", "r")
+  local listed = mf and (mf.readAll() or "") or ""
+  if mf then mf.close() end
+  check(not listed:find("fleet%.cfg"),
+    "fleet.cfg is not in the manifest, so update never replaces it")
+
+  if had then
+    local restore = fs.open(OVERRIDES, "w")
+    restore.write("return {}\n")
+    restore.close()
+  end
+end
+
+--------------------------------------------------------------------------------
 print("manifest: the installer ships every file and no phantoms")
 --------------------------------------------------------------------------------
 do

@@ -1,9 +1,19 @@
---- Shared configuration for miner.lua / remote.lua.
--- Edit this file rather than hardcoding values in the programs.
+--- Shared configuration for every program here.
+--
+-- These are the defaults. Anything in /fleet.cfg overrides them -- see the
+-- bottom of this file. Change things there, not here: this file is replaced
+-- wholesale by `update`, and /fleet.cfg is not, which is the entire point of
+-- the split.
 
 local config = {}
 
--- rednet protocol both ends speak.
+-- The rednet protocol every program speaks, and what separates one fleet from
+-- another. Two fleets on different protocols never see each other's messages,
+-- even sharing a world and the same modem channels.
+--
+-- There is no port number to set. rednet fixes its channels (a computer's own
+-- id, and 65535 for broadcasts) and filters delivery by this string instead, so
+-- the protocol *is* the port. install.lua writes it into /fleet.cfg.
 config.protocol = "mining"
 
 -- Where the resumable job state lives.
@@ -149,10 +159,9 @@ for _, dye in ipairs({ "white", "orange", "magenta", "light_blue", "yellow",
   config.container["minecraft:" .. dye .. "_shulker_box"] = true
 end
 
--- Never dropped and never dumped into the chest.
-config.keep = {}
-for name in pairs(config.fuel) do config.keep[name] = true end
-for name in pairs(config.dumpChest) do config.keep[name] = true end
+-- config.keep -- never dropped and never dumped into the chest -- is derived
+-- from config.fuel and config.dumpChest, and is built at the bottom of this
+-- file so it picks up anything /fleet.cfg overrides.
 
 -- Vein following: when a pattern is run with `veins` on, an ore next to the
 -- turtle's path is chased to the end of its vein and then the turtle retraces
@@ -231,5 +240,39 @@ config.hazard = {
   ["minecraft:lava"]         = true,
   ["minecraft:flowing_lava"] = true,
 }
+
+--------------------------------------------------------------------------------
+-- Local overrides
+--------------------------------------------------------------------------------
+
+-- /fleet.cfg is a Lua file returning a table of settings to override, written
+-- by install.lua and edited by hand if you like:
+--
+--   return { protocol = "mining-north", fuelMargin = 128 }
+--
+-- It is deliberately **not** in manifest.txt, so `update` never touches it. A
+-- per-fleet setting stored in a file the updater replaces would survive exactly
+-- until the first update, and then quietly reunite two fleets that were meant
+-- to be separate.
+config.overridesFile = "/fleet.cfg"
+
+if fs and fs.exists(config.overridesFile) then
+  local fn = loadfile(config.overridesFile)
+  if fn then
+    local ok, custom = pcall(fn)
+    if ok and type(custom) == "table" then
+      for key, value in pairs(custom) do config[key] = value end
+    end
+  end
+  -- A malformed overrides file is ignored rather than fatal. Every program here
+  -- requires this module at load, so throwing would brick the computer with no
+  -- obvious way to get back in and fix it.
+end
+
+-- Rebuilt after the overrides, because it is derived from two tables that can
+-- themselves be overridden.
+config.keep = {}
+for name in pairs(config.fuel) do config.keep[name] = true end
+for name in pairs(config.dumpChest) do config.keep[name] = true end
 
 return config

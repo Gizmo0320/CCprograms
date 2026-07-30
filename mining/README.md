@@ -54,7 +54,34 @@ the wrong computer. The installer downloads everything before writing anything,
 so a dropped connection leaves the old working copy rather than half a file; it
 also labels the computer by role, which is what makes the fleet table readable.
 
-To install from a fork or a branch: `install.lua <branch> <owner/repo>`.
+It asks for a **fleet name**. Computers only talk to others on the same one, so
+running two independent setups in one world is a matter of installing them with
+different names — `north` and `south`, say. Press enter for the default.
+
+There is no port number to set: rednet fixes its channels and separates traffic
+by a protocol string instead, so the fleet name *is* the port. The name goes in
+`/fleet.cfg`, which is deliberately **not** in `manifest.txt` — a per-fleet
+setting stored in a file the updater replaces would survive exactly until the
+first update, and then quietly reunite two fleets that were meant to be apart.
+
+`/fleet.cfg` overrides anything in `lib/config.lua`, not just the protocol:
+
+```lua
+return {
+  protocol   = "mining-north",
+  fuelMargin = 128,
+}
+```
+
+For a fork, a branch, or an unattended install:
+
+```
+install.lua <branch> <owner/repo>
+install.lua --fleet=north          skip the prompt
+```
+
+Pass `--fleet=` when scripting: without it the prompt waits for a line of input,
+and unlike the reboot prompt at the end, `read()` cannot be given a timeout.
 
 ## Updating
 
@@ -67,7 +94,9 @@ update --check    say what would change, and change nothing
 
 It compares every file against the repo and writes only what differs, so
 "already up to date" costs nothing but the download. As with installing, it
-fetches everything before writing anything.
+fetches everything before writing anything, and it only touches files listed in
+`manifest.txt` — so `/fleet.cfg`, and which fleet this computer is on, survives
+every update.
 
 From the pocket, `UPDATE` on the fleet screen (or `u`) pushes it to every
 turtle at once — updating a dozen turtles by hand is exactly the chore worth

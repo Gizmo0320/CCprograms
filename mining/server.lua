@@ -276,9 +276,9 @@ local function drawTo(target)
   local c = fleet.counts(F, t)
   local y = 1
 
-  at(1, y, ("FLEET  %d turtles  %d idle  %d busy%s"):format(
-    c.turtles, c.idle, c.busy, c.stale > 0 and ("  " .. c.stale .. " lost") or ""),
-    colours.cyan)
+  at(1, y, ("FLEET %s  %d turtles  %d idle  %d busy%s"):format(
+    config.protocol, c.turtles, c.idle, c.busy,
+    c.stale > 0 and ("  " .. c.stale .. " lost") or ""), colours.cyan)
   y = y + 1
   at(1, y, string.rep("-", W), colours.grey); y = y + 1
 
@@ -386,7 +386,8 @@ local function main()
     note(("restored %d job(s)"):format(#F.jobs), colours.lightGrey)
   end
 
-  note("server " .. os.getComputerID() .. " up on " .. side, colours.cyan)
+  note(("server %d up on %s, fleet '%s'")
+    :format(os.getComputerID(), side, config.protocol), colours.cyan)
 
   parallel.waitForAny(listenerTask, dispatchTask, broadcastTask, displayTask)
 end

@@ -7,13 +7,34 @@
 -- what it is running on -- so there is one thing to install and no way to put
 -- the wrong half on the wrong computer.
 --
--- Optional arguments: install <branch> <owner/repo>
+-- Optional arguments:
+--   install <branch> <owner/repo>
+--   install --fleet=north          name the fleet without being asked
+--
+-- Pass --fleet= for an unattended install: without it the fleet prompt waits
+-- for a line of input, and read() cannot be given a timeout the way the reboot
+-- prompt at the end can.
+--
+-- The fleet name is the rednet protocol every program on this computer will
+-- speak, and it is what lets two fleets share a world without hearing each
+-- other. It goes in /fleet.cfg, which is deliberately not something `update`
+-- replaces.
 
 local args = { ... }
 
-local BRANCH = args[1] or "main"
-local REPO   = args[2] or "Gizmo0320/CCprograms"
+local FLEET
+local positional = {}
+for _, a in ipairs(args) do
+  local named = a:match("^%-%-fleet=(.+)$")
+  if named then FLEET = named
+  elseif a ~= "" then positional[#positional + 1] = a end
+end
+
+local BRANCH = positional[1] or "main"
+local REPO   = positional[2] or "Gizmo0320/CCprograms"
 local BASE   = ("https://raw.githubusercontent.com/%s/%s/mining/"):format(REPO, BRANCH)
+
+local OVERRIDES = "/fleet.cfg"
 
 --------------------------------------------------------------------------------
 
@@ -123,6 +144,65 @@ for path, body in pairs(bodies) do
 end
 
 say(("Installed %d file(s)."):format(#files), colours.lime)
+
+--------------------------------------------------------------------------------
+-- Which fleet is this?
+--------------------------------------------------------------------------------
+
+--- What /fleet.cfg currently says, if anything.
+local function currentFleet()
+  if not fs.exists(OVERRIDES) then return nil end
+  local fn = loadfile(OVERRIDES)
+  if not fn then return nil end
+  local ok, cfg = pcall(fn)
+  if ok and type(cfg) == "table" then return cfg.protocol end
+  return nil
+end
+
+--- A protocol string goes in rednet messages and on screen in narrow columns.
+--- Anything outside this is more likely a typo than an intention.
+local function sanitise(name)
+  name = tostring(name):match("^%s*(.-)%s*$")
+  name = name:gsub("[^%w%-_]", "")
+  return name:sub(1, 24)
+end
+
+local existing = currentFleet()
+
+if not FLEET then
+  print()
+  if existing then
+    say("This computer is on fleet '" .. existing .. "'.", colours.lightGrey)
+    say("Enter to keep it, or type a new name:", colours.yellow)
+  else
+    say("Fleet name? Computers only talk to others on the", colours.yellow)
+    say("same one. Enter for the default 'mining':", colours.yellow)
+  end
+  term.setTextColour(colours.white)
+  FLEET = read()
+end
+
+FLEET = sanitise(FLEET or "")
+if FLEET == "" then FLEET = existing or "mining" end
+
+-- Only write the file when it says something other than the default, so a
+-- single-fleet setup has nothing extra to explain.
+if FLEET ~= "mining" then
+  local f = fs.open(OVERRIDES, "w")
+  if f then
+    f.write(("-- Written by install.lua. Not in manifest.txt, so `update`\n"
+      .. "-- will not replace it. Edit freely; anything here overrides\n"
+      .. "-- the defaults in lib/config.lua.\nreturn {\n  protocol = %q,\n}\n")
+      :format(FLEET))
+    f.close()
+  end
+elseif fs.exists(OVERRIDES) and existing and existing ~= "mining" then
+  -- Explicitly moved back to the default: drop the override rather than
+  -- leaving a file that says one thing while the fleet is on another.
+  fs.delete(OVERRIDES)
+end
+
+say("Fleet: " .. FLEET, colours.cyan)
 
 --------------------------------------------------------------------------------
 -- What did we just install onto?

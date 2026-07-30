@@ -29,8 +29,13 @@ local link = {
   seenAt  = -math.huge,     -- when that arrived
   turtles = {},             -- [id] = status, for direct mode
   heard   = {},             -- [id] = os.clock() of its last heartbeat
-  note    = "looking for a server...",
+  note    = nil,      -- set below, once config.protocol is known
 }
+
+-- Which fleet this pocket is on. Two fleets in one world are only separated by
+-- the protocol string, so when nothing answers it matters a great deal whether
+-- you are on the one you think you are.
+link.note = ("fleet '%s': looking..."):format(config.protocol)
 
 local function openModem()
   for _, side in ipairs(peripheral.getNames()) do
