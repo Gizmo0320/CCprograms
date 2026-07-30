@@ -98,7 +98,7 @@ For a fork, a branch, or an unattended install:
 
 ```
 install.lua <branch> <owner/repo>
-install.lua --fleet=north --channel=4200    skip both prompts
+install.lua --fleet=north --channel=4200 --name=Digger   skip the prompts
 ```
 
 Pass `--fleet=` when scripting: without it the prompt waits for a line of input,
@@ -214,7 +214,9 @@ of a mined face.
    fix refuses a placed job rather than navigating in a frame of its own
    invention.
 3. Turtles placed at base, each with its own chest. They report in by
-   themselves; there is nothing to register.
+   themselves; there is nothing to register. The installer asks each one for a
+   name, and you can rename any of them later from the pocket without
+   reinstalling.
 4. Optionally a **scout**: a turtle with an Advanced Peripherals geo scanner and
    a wireless modem. See below — it is a different animal from a miner.
 
@@ -263,9 +265,11 @@ Worth knowing:
 The pocket has three screens, `TAB` to cycle. The header always says `SERVR` or
 `DIRCT` so it is never ambiguous where a command went.
 
-**FLEET** — a row per turtle: id, label, state, progress. Tap a row to target
+**FLEET** — a row per turtle: id, name, state, progress. Tap a row to target
 just that one, tap it again to go back to `ALL`. `PAUSE` / `RESUME` /
-`ABORT` / `RECALL` act on the target. `PAUSE` takes effect within one block, not
+`ABORT` / `RECALL` act on the target. `NAME` (or `n`) renames the selected
+turtle — "Digger" tells you what you are about to recall in a way that
+"turtle 7" does not. `PAUSE` takes effect within one block, not
 at the end of a layer; `ABORT` needs two presses.
 
 **DEPLOY** — walk to the corner you want dug and press `SET` to stamp the anchor
@@ -276,8 +280,8 @@ per lane. Tap any number to type it instead of clicking `+` forty times.
 **QUEUE** — pending and running jobs. Tap one to cancel it; a running job's
 turtle is recalled.
 
-Keys: `p` `r` `a` `c` are pause, resume, abort, recall; `s` submits; `TAB`
-changes screen; `q` exits.
+Keys: `p` `r` `a` `c` are pause, resume, abort, recall; `n` names the selected
+turtle; `u` updates; `s` submits; `TAB` changes screen; `q` exits.
 
 Without a server, `DEPLOY` sends a plain relative job to the selected turtle,
 exactly as this program did before there was a fleet, and `QUEUE` says so rather

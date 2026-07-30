@@ -101,11 +101,17 @@ end
 -- keyboard, and a bad push that takes out the thing coordinating the recovery
 -- is a worse day than walking over to it and typing `update`.
 local ACTIONS = { pause = true, resume = true, abort = true,
-                  ["return"] = true, update = true }
+                  ["return"] = true, update = true, rename = true }
 
 local function handleCommand(from, msg)
   if not ACTIONS[msg.action] then
     send(from, { type = "error", reason = "unknown action " .. tostring(msg.action) })
+    return
+  end
+
+  -- Naming every turtle the same thing is the opposite of what naming is for.
+  if msg.action == "rename" and msg.target == "all" then
+    send(from, { type = "error", reason = "rename needs one turtle, not all" })
     return
   end
 
@@ -122,7 +128,8 @@ local function handleCommand(from, msg)
   for _, id in ipairs(targets) do
     -- Forward the branch and repo so a fleet can be pointed at a fork or a
     -- test branch without reinstalling every turtle by hand.
-    send(id, { type = msg.action, branch = msg.branch, repo = msg.repo })
+    send(id, { type = msg.action, branch = msg.branch, repo = msg.repo,
+               name = msg.name })
   end
   note(("%s -> %d turtle(s)"):format(msg.action, #targets), colours.yellow)
   send(from, { type = "ack", of = "command", count = #targets })

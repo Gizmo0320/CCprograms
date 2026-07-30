@@ -221,6 +221,64 @@ do
 end
 
 --------------------------------------------------------------------------------
+say("remote: naming a turtle")
+--------------------------------------------------------------------------------
+do
+  -- Fleet screen: 1 tabs, 2 rule, 3 header, 4 first roster row. The NAME button
+  -- sits on the target row near the bottom, at H-6+1 = 15 on a 20 row screen.
+  local sent = runRemote({
+    frame(50, fleetOf(7, 9)),
+    { "mouse_click", 1, 3, 4 },          -- select turtle 7
+    { "mouse_click", 1, 13, 15 },        -- NAME
+    { "char", "D" }, { "char", "i" }, { "char", "g" },
+    { "key", keys.enter },
+  })
+
+  local cmd = find(sent, function(s) return s.msg.type == "command"
+    and s.msg.action == "rename" end)
+  check(cmd ~= nil, "a rename command is sent")
+  check(cmd and cmd.msg.name == "Dig", "carrying the typed name", cmd and cmd.msg.name)
+  check(cmd and cmd.msg.target == 7, "for the selected turtle", cmd and cmd.msg.target)
+  check(cmd and cmd.msg.target ~= "all", "never for all of them at once")
+
+  -- Letters have to reach the field. The parameter editor takes digits only,
+  -- which would make naming anything impossible.
+  check(cmd and cmd.msg.name:match("%a"), "so letters are accepted, not just digits")
+end
+
+--------------------------------------------------------------------------------
+say("remote: naming with no turtle selected asks first")
+--------------------------------------------------------------------------------
+do
+  local sent = runRemote({
+    frame(50, fleetOf(7, 9)),
+    { "char", "n" },                     -- nothing selected
+    { "char", "X" },
+    { "key", keys.enter },
+  })
+  check(find(sent, function(s) return s.msg.type == "command"
+    and s.msg.action == "rename" end) == nil,
+    "no rename goes out without a turtle to apply it to")
+end
+
+--------------------------------------------------------------------------------
+say("remote: DIRECT mode names the turtle itself")
+--------------------------------------------------------------------------------
+do
+  local sent = runRemote({
+    frame(7, statusOf(7, "idle")),
+    { "mouse_click", 1, 3, 4 },          -- select turtle 7
+    { "char", "n" },
+    { "char", "B" }, { "char", "o" }, { "char", "b" },
+    { "key", keys.enter },
+  })
+  local direct = find(sent, function(s) return s.msg.type == "rename" end)
+  check(direct ~= nil, "with no server the rename goes straight to the turtle")
+  check(direct and direct.to == 7, "addressed to it", direct and direct.to)
+  check(direct and direct.msg.name == "Bob", "with the name", direct and direct.msg.name)
+end
+
+--------------------------------------------------------------------------------
 say("remote: submitting a split job")
 --------------------------------------------------------------------------------
 do

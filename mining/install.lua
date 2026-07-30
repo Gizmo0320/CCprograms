@@ -11,10 +11,11 @@
 --   install <branch> <owner/repo>
 --   install --fleet=north          name the fleet without being asked
 --   install --channel=4200         set the modem channel without being asked
+--   install --name=Digger         name this computer without being asked
 --
--- Pass --fleet= for an unattended install: without it the fleet prompt waits
--- for a line of input, and read() cannot be given a timeout the way the reboot
--- prompt at the end can.
+-- Pass --fleet=, --channel= and --name= for an unattended install: without them
+-- the prompts wait for a line of input, and read() cannot be given a timeout
+-- the way the reboot prompt at the end can.
 --
 -- The fleet name and channel go in /fleet.cfg, which `update` deliberately
 -- does not replace. The channel is the port: a modem never raises an event for
@@ -23,13 +24,15 @@
 
 local args = { ... }
 
-local FLEET, CHANNEL
+local FLEET, CHANNEL, NAME
 local positional = {}
 for _, a in ipairs(args) do
   local fleetArg = a:match("^%-%-fleet=(.+)$")
   local chanArg  = a:match("^%-%-channel=(%d+)$")
+  local nameArg  = a:match("^%-%-name=(.+)$")
   if fleetArg then FLEET = fleetArg
   elseif chanArg then CHANNEL = tonumber(chanArg)
+  elseif nameArg then NAME = nameArg
   elseif a ~= "" then positional[#positional + 1] = a end
 end
 
@@ -265,12 +268,26 @@ end
 print()
 say("This computer is a " .. role .. ".", colours.cyan)
 
--- A readable roster beats a column of numbers, and the label is the only thing
--- the fleet table has to show besides the id.
-if not os.getComputerLabel() then
-  os.setComputerLabel(role .. "-" .. os.getComputerID())
-  say("Labelled " .. os.getComputerLabel(), colours.lightGrey)
+-- The name is the only thing distinguishing one row of the fleet table from
+-- another besides a number, and "Digger" tells you what you are about to recall
+-- in a way that "turtle 7" does not.
+--
+-- It lives in the computer's own label rather than /fleet.cfg: a label already
+-- survives updates, reboots, and being broken and replaced, and CC's own
+-- `label` program can read and set it without this program involved.
+local suggested = os.getComputerLabel() or (role .. "-" .. os.getComputerID())
+
+if not NAME then
+  print()
+  say("Name for this " .. role .. "? Enter for '" .. suggested .. "':", colours.yellow)
+  term.setTextColour(colours.white)
+  NAME = read()
 end
+
+NAME = sanitise(NAME or "")
+if NAME == "" then NAME = suggested end
+os.setComputerLabel(NAME)
+say("Named " .. NAME, colours.cyan)
 
 if not hasWirelessModem() then
   say("No wireless modem. This one cannot join the fleet until", colours.orange)

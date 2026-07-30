@@ -415,6 +415,35 @@ do
 end
 
 --------------------------------------------------------------------------------
+say("server: relays a rename, but never to the whole fleet")
+--------------------------------------------------------------------------------
+do
+  local sent, _, err = runServer({
+    { from = 7, msg = statusOf(7, "idle") },
+    { from = 9, msg = statusOf(9, "idle") },
+    { from = 99, msg = { type = "command", target = 7, action = "rename",
+                         name = "Digger" } },
+    -- Naming every turtle the same thing is the opposite of what naming is for.
+    { from = 99, msg = { type = "command", target = "all", action = "rename",
+                         name = "Digger" } },
+    { wait = 0.2, from = 7, msg = statusOf(7, "idle") },
+  })
+  check(err == nil, "the server runs", err)
+
+  local renames = countOf(sent, function(s) return s.msg.type == "rename" end)
+  check(renames == 1, "exactly one turtle is renamed", renames)
+
+  local one = find(sent, function(s) return s.msg.type == "rename" end)
+  check(one and one.to == 7, "the targeted one", one and one.to)
+  check(one and one.msg.name == "Digger", "with the name forwarded",
+    one and one.msg.name)
+
+  check(find(sent, function(s) return s.msg.type == "error"
+    and tostring(s.msg.reason):find("one turtle") end) ~= nil,
+    "and renaming 'all' is refused with a reason")
+end
+
+--------------------------------------------------------------------------------
 say("server: cancelling a running job recalls its turtle")
 --------------------------------------------------------------------------------
 do

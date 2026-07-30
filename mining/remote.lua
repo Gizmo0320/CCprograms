@@ -86,10 +86,17 @@ local lanes   = 1
 
 local sel = { pattern = 1, values = {} }
 
--- Inline numeric entry: { key = <param>, text = "42" } while a value is being
--- typed. Deliberately not read(), which blocks the event loop -- heartbeats
--- would stop arriving and the link would read LOST while you type.
+-- Inline entry: { key = <param>, text = "42", kind = "number"|"text" } while
+-- something is being typed. Deliberately not read(), which blocks the event
+-- loop -- heartbeats would stop arriving and the link would read LOST while
+-- you type.
+--
+-- `kind` decides which characters are accepted. Parameters take digits; a
+-- turtle's name takes letters too, which is the whole point of naming it.
 local editing = nil
+
+local EDIT_PATTERN = { number = "%d", text = "[%w%-_ ]" }
+local EDIT_LIMIT   = { number = 4, text = 12 }
 
 local function currentPattern()
   return specs.get(specs.order[sel.pattern])
@@ -130,6 +137,17 @@ end
 --- or unparseable entry leaves the old value alone rather than guessing.
 local function commitEdit()
   if not editing then return end
+
+  if editing.kind == "text" then
+    -- Renaming is handled by the caller through onCommit, because it has to go
+    -- out on the wire rather than into a local table.
+    local text = editing.text:match("^%s*(.-)%s*$")
+    local done = editing.onCommit
+    editing = nil
+    if done and text ~= "" then done(text) end
+    return
+  end
+
   local spec = paramSpec(editing.key)
   local v = tonumber(editing.text)
   if spec and v then
@@ -207,6 +225,19 @@ local function command(action)
     n = n + 1
   end
   return ("%s -> %d turtle(s)"):format(action, n)
+end
+
+--- Rename one turtle. Same routing as any other command, but never "all":
+--- naming every turtle the same defeats the purpose of naming them.
+local function rename(id, name)
+  if not id then return "pick a turtle first" end
+
+  if haveServer() then
+    toServer({ type = "command", target = id, action = "rename", name = name })
+  else
+    toTurtle(id, { type = "rename", name = name })
+  end
+  return ("named #%d %s"):format(id, name)
 end
 
 local function submit()
@@ -328,16 +359,38 @@ local function drawFleet()
   y = H - 6
   rule(y); y = y + 1
 
-  at(1, y, "Target", colours.lightGrey)
-  at(8, y, target and ("#" .. target) or "ALL",
-    target and colours.white or colours.yellow)
-  button(14, y, 4, "ALL", target and colours.grey or colours.blue, colours.white,
-    function() target = nil end)
-  -- Safe to leave unguarded: a turtle refuses an update while it is working, so
-  -- the worst this can do is reboot the idle half of the fleet.
-  button(19, y, 7, "UPDATE", colours.brown, colours.white, function()
-    flashNow(command("update"), colours.cyan, 4)
-  end)
+  if editing and editing.kind == "text" then
+    -- The name entry takes over this row while it is open. There is no space on
+    -- 26 columns for a field beside the buttons, and nothing else on this row is
+    -- any use while you are typing anyway.
+    at(1, y, "Name", colours.lightGrey)
+    at(6, y, editing.text .. "_", colours.yellow)
+    at(W - 8, y, "enter=ok", colours.grey)
+  else
+    at(1, y, target and ("#" .. target) or "ALL",
+      target and colours.white or colours.yellow)
+    button(6, y, 4, "ALL", target and colours.grey or colours.blue, colours.white,
+      function() target = nil end)
+
+    -- Naming one turtle at a time is the point; naming them all the same is not.
+    button(11, y, 5, "NAME", target and colours.blue or colours.grey, colours.white,
+      function()
+        if not target then
+          flashNow("pick a turtle to name", colours.orange, 3)
+          return
+        end
+        editing = {
+          kind = "text", text = "",
+          onCommit = function(name) flashNow(rename(target, name), colours.cyan) end,
+        }
+      end)
+
+    -- Safe to leave unguarded: a turtle refuses an update while it is working,
+    -- so the worst this can do is reboot the idle half of the fleet.
+    button(17, y, 8, "UPDATE", colours.brown, colours.white, function()
+      flashNow(command("update"), colours.cyan, 4)
+    end)
+  end
   y = y + 1
 
   local half = math.floor((W - 1) / 2)
@@ -368,7 +421,7 @@ local function drawFleet()
   y = y + 1
 
   statusLine(y)
-  drawFooter(y + 1, "tab  p/r/a/c  u update  q")
+  drawFooter(y + 1, "tab p/r/a/c n name u upd q")
 end
 
 --------------------------------------------------------------------------------
@@ -401,7 +454,9 @@ local function numberRow(y, label, value, spec, get, set)
   else
     at(14, y, ("%4d"):format(value), colours.white)
   end
-  region(14, 17, y, function() editing = { key = spec.key, text = "" } end)
+  region(14, 17, y, function()
+    editing = { key = spec.key, text = "", kind = "number" }
+  end)
 
   button(19, y, 1, "+",  colours.grey, colours.white, function() set(get() + 1) end)
   button(21, y, 2, "++", colours.grey, colours.white, function() set(get() + 10) end)
@@ -636,8 +691,10 @@ local function main()
       draw()
 
     elseif event == "char" and editing then
-      -- Digits only, and short enough that no parameter can overflow its field.
-      if a:match("%d") and #editing.text < 4 then
+      -- What is accepted depends on what is being typed, and both are short
+      -- enough that nothing can overflow the field it is drawn in.
+      local kind = editing.kind or "number"
+      if a:match(EDIT_PATTERN[kind]) and #editing.text < EDIT_LIMIT[kind] then
         editing.text = editing.text .. a
       end
       draw()
@@ -656,6 +713,16 @@ local function main()
         submit()
       elseif key == "u" then
         flashNow(command("update"), colours.cyan, 4)
+      elseif key == "n" then
+        if target then
+          screen = "fleet"
+          editing = {
+            kind = "text", text = "",
+            onCommit = function(name) flashNow(rename(target, name), colours.cyan) end,
+          }
+        else
+          flashNow("pick a turtle to name", colours.orange, 3)
+        end
       elseif key == "a" then
         if os.clock() < armedAbort then
           armedAbort = 0

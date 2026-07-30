@@ -317,6 +317,20 @@ local function listenerTask()
       elseif t == "status" then
         reply(id, buildStatus())
 
+      elseif t == "rename" then
+        -- Renaming is harmless mid-job, unlike an update: nothing on disk
+        -- changes and the turtle does not reboot, so there is no reason to make
+        -- someone stop a two hour quarry to fix a typo.
+        local name = tostring(msg.name or ""):match("^%s*(.-)%s*$")
+        name = name:gsub("[^%w%-_ ]", ""):sub(1, 16)
+        if name == "" then
+          reply(id, { type = "error", reason = "a name cannot be empty" })
+        else
+          os.setComputerLabel(name)
+          log(colours.cyan, "Renamed to " .. name)
+          reply(id, { type = "ack", of = t, name = name })
+        end
+
       elseif t == "update" then
         -- Never mid-job. Swapping lib/move.lua underneath a running quarry
         -- leaves a turtle halfway down a hole running half of two versions,

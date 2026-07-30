@@ -36,6 +36,7 @@ Pocket -> turtle:
 - `{type="pause"}` / `{type="resume"}` / `{type="abort"}`
 - `{type="status"}` (explicit request)
 - `{type="return"}` (come home now, abandon job)
+- `{type="rename", name=<string>}` — set the computer label. Allowed mid-job, unlike an update: nothing on disk changes and the turtle does not reboot, so there is no reason to make someone stop a two hour quarry to fix a typo. The server refuses `target="all"`, since naming every turtle the same defeats the point.
 - `{type="update", branch=<string>, repo=<string>}` — run update.lua and reboot. Refused while mining or returning: swapping `lib/move.lua` underneath a running quarry leaves a turtle halfway down a hole running half of two versions. The updater runs *after* `parallel.waitForAny` returns, never from inside the listener, because rebooting out of one branch while a job unwinds in another is how a half-written state file happens.
 
 A `start` may also carry `origin={x,y,z}`, `facing=<0-3>` and `jobId=<string>`. The origin is a **waypoint, not a new home**: `move.home` stays the block the player placed the turtle on, because that is where its dump chest is. A turtle with no GPS fix refuses a job carrying an origin rather than navigating an absolute coordinate in its own dead-reckoned frame.
@@ -116,6 +117,16 @@ Two timing constants earn their keep and are easy to get wrong:
 4. rednet listener + `parallel` integration in `miner.lua`
 5. Pure fleet logic (`lib/fleet.lua`), then `server.lua` over it
 6. `remote.lua` UI last — it only renders what the protocol already provides
+
+### Names
+
+A turtle's name is its computer label (`os.setComputerLabel`), not a `/fleet.cfg`
+entry. A label already survives updates, reboots and being broken and replaced,
+and CC's own `label` program can read and set it without this project involved.
+`install.lua` asks for one; `remote.lua` can change it over the wire.
+
+The pocket's inline editor takes a `kind` -- `number` for job parameters,
+`text` for names -- because a digits-only field cannot name anything.
 
 ### Configuration
 
