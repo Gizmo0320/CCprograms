@@ -102,7 +102,13 @@ end
 -- Commands from the pocket
 --------------------------------------------------------------------------------
 
-local ACTIONS = { pause = true, resume = true, abort = true, ["return"] = true }
+-- `update` is relayed like any other command; a turtle refuses it while it is
+-- working, so the blast radius is the idle half of the fleet. The server does
+-- not update itself from this: it is one machine sitting at your base with a
+-- keyboard, and a bad push that takes out the thing coordinating the recovery
+-- is a worse day than walking over to it and typing `update`.
+local ACTIONS = { pause = true, resume = true, abort = true,
+                  ["return"] = true, update = true }
 
 local function handleCommand(from, msg)
   if not ACTIONS[msg.action] then
@@ -120,7 +126,11 @@ local function handleCommand(from, msg)
     return
   end
 
-  for _, id in ipairs(targets) do send(id, { type = msg.action }) end
+  for _, id in ipairs(targets) do
+    -- Forward the branch and repo so a fleet can be pointed at a fork or a
+    -- test branch without reinstalling every turtle by hand.
+    send(id, { type = msg.action, branch = msg.branch, repo = msg.repo })
+  end
   note(("%s -> %d turtle(s)"):format(msg.action, #targets), colours.yellow)
   send(from, { type = "ack", of = "command", count = #targets })
 end

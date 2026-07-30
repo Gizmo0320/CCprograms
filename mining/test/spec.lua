@@ -65,7 +65,7 @@ local function fixture(opts)
   move.pos, move.heading = { x = 0, y = 0, z = 0 }, 0
   move.home, move.homeHeading = { x = 0, y = 0, z = 0 }, 0
   move.mined, move.returning = 0, false
-  move.dumping, move.dumpRuns = false, 0
+  move.dumping, move.dumpRuns, move.fuelRuns = false, 0, 0
   move.ctl = { paused = false, abort = false, returnHome = false }
 
   -- Prove the wiring before trusting a single assertion made through it.
@@ -81,7 +81,8 @@ local function fixture(opts)
   move.pos, move.heading = { x = 0, y = 0, z = 0 }, 0
   t.pos, t.heading = { x = 0, y = 0, z = 0 }, 0
   move.mined, t.moves, t.dropped, t.intoChest = 0, 0, 0, 0
-  move.dumpRuns, t.chestFull = 0, false
+  move.dumpRuns, move.fuelRuns, t.chestFull = 0, 0, false
+  t.chestStock, t.sucked = {}, 0
   t.fuel = opts and opts.fuel or 100000
   return t, move, patterns
 end
@@ -569,6 +570,136 @@ do
   check(not ok, "the dump run reports failure", tostring(ok))
   check(tostring(why):find("full"), "naming the full container", why)
   check(turtle.getItemCount(16) > 0, "and the inventory really is still full")
+end
+
+--------------------------------------------------------------------------------
+print("refuel: fetches fuel from the chest at home and carries on")
+--------------------------------------------------------------------------------
+do
+  local t, move = fixture()
+  t.fill(-20, -30, -20, 20, -1, 20, "minecraft:stone")
+  t.setBlock(0, 1, 0, "minecraft:chest")
+  t.chestStock = { { name = "minecraft:coal", count = 64 } }
+
+  move.pos, t.pos = { x = -3, y = -8, z = 4 }, { x = -3, y = -8, z = 4 }
+  move.heading, t.heading = 2, 2
+  t.fuel = 60                                   -- enough to get home, not much else
+
+  local ok, why = move.fuelRun()
+  check(ok, "the fuel run succeeds", why)
+  check(t.fuel > 1000, "the turtle comes back with a tank full", t.fuel)
+  check(move.pos.x == -3 and move.pos.y == -8 and move.pos.z == 4,
+    "on the block it left", ("%d,%d,%d"):format(move.pos.x, move.pos.y, move.pos.z))
+  check(move.heading == 2, "facing the way it was", move.heading)
+  check(move.fuelRuns == 1, "and it is counted", move.fuelRuns)
+end
+
+--------------------------------------------------------------------------------
+print("refuel: the reserve is one way, not a round trip")
+--------------------------------------------------------------------------------
+do
+  -- The asymmetry that makes this work. A dump run demands enough fuel to get
+  -- home AND back, because it is optional. A fuel run happens precisely because
+  -- fuel is short, so demanding a round trip would refuse exactly when needed --
+  -- the return leg is paid for out of what it collects.
+  local t, move = fixture()
+  t.fill(-20, -30, -20, 20, -1, 20, "minecraft:stone")
+  t.setBlock(0, 1, 0, "minecraft:chest")
+  t.chestStock = { { name = "minecraft:coal", count = 64 } }
+
+  move.pos, t.pos = { x = 0, y = -40, z = 0 }, { x = 0, y = -40, z = 0 }
+  for i = 1, 16 do t.slots[i] = { name = "minecraft:cobblestone", count = 64 } end
+  t.fuel = 45                                   -- one way is 40; a round trip is not
+
+  local dumped, dumpWhy = move.dumpRun()
+  check(not dumped, "a dump run is refused at this fuel level", tostring(dumped))
+  check(tostring(dumpWhy):find("round trip") ~= nil, "because of the round trip", dumpWhy)
+
+  local fuelled, fuelWhy = move.fuelRun()
+  check(fuelled, "but a fuel run goes ahead", fuelWhy)
+  check(move.pos.y == -40, "and gets back to the job", move.pos.y)
+  check(t.fuel > 500, "with fuel to spare", t.fuel)
+
+  -- That run also had to solve a full inventory: a turtle that has mined until
+  -- it ran dry has no free slot to put coal in. It empties into the chest it is
+  -- standing at first, which is only possible because it is already home.
+  check(turtle.getItemCount(16) == 0, "having emptied itself to make room")
+end
+
+--------------------------------------------------------------------------------
+print("refuel: the fuel guard escalates before giving up")
+--------------------------------------------------------------------------------
+do
+  local t, move, patterns = fixture({ fuel = 400 })
+  t.fill(-20, -30, -20, 20, -1, 20, "minecraft:stone")
+  t.setBlock(0, 1, 0, "minecraft:barrel")
+  t.chestStock = {}
+  for _ = 1, 12 do
+    t.chestStock[#t.chestStock + 1] = { name = "minecraft:coal", count = 64 }
+  end
+
+  -- A job far bigger than the starting tank. It should only finish because the
+  -- turtle keeps going back for more.
+  local ok, err = pcall(patterns.get("quarry").run, { w = 8, d = 8, h = 6 }, newCtx())
+  check(ok, "a job larger than one tank completes", err and textutils.serialize(err))
+  check(move.mined == 8 * 8 * 6, "mining the whole volume", move.mined)
+  check(move.fuelRuns > 0, "by going back for fuel", move.fuelRuns)
+  check(t.sucked > 0, "actually taken from the chest", t.sucked)
+end
+
+--------------------------------------------------------------------------------
+print("refuel: no fuel at home is still a clean stop")
+--------------------------------------------------------------------------------
+do
+  local t, move, patterns = fixture({ fuel = 300 })
+  t.fill(-20, -30, -20, 20, -1, 20, "minecraft:stone")
+  t.setBlock(0, 1, 0, "minecraft:chest")
+  t.chestStock = {}                             -- an empty chest
+
+  local ok, err = pcall(patterns.get("quarry").run, { w = 8, d = 8, h = 6 }, newCtx())
+  check(not ok, "the job stops")
+  check(move.isSignal(err) == "fuel", "with the fuel signal, so it stays resumable",
+    move.isSignal(err) or tostring(err))
+  check(move.goHome(), "and the turtle still gets home")
+
+  -- A chest of cobblestone is not a fuel chest, and its contents must not end up
+  -- in the turtle's inventory.
+  local t2, move2 = fixture()
+  t2.setBlock(0, 1, 0, "minecraft:chest")
+  t2.chestStock = { { name = "minecraft:cobblestone", count = 64 } }
+  move2.pos, t2.pos = { x = 0, y = -5, z = 0 }, { x = 0, y = -5, z = 0 }
+  t2.fill(-10, -20, -10, 10, -1, 10, "minecraft:stone")
+  t2.fuel = 200
+  local got, gotWhy = move2.fuelRun()
+  check(not got, "a chest with no fuel in it is refused", tostring(got))
+  check(tostring(gotWhy):find("no fuel") ~= nil, "saying so", gotWhy)
+  local carrying = 0
+  for i = 1, 16 do
+    local item = turtle.getItemDetail(i)
+    if item and item.name == "minecraft:cobblestone" then carrying = carrying + 1 end
+  end
+  check(carrying == 0, "and the cobblestone is put back, not carted around", carrying)
+end
+
+--------------------------------------------------------------------------------
+print("refuel: tops up while it is already home dumping")
+--------------------------------------------------------------------------------
+do
+  local t, move = fixture()
+  t.fill(-20, -30, -20, 20, -1, 20, "minecraft:stone")
+  t.setBlock(0, 1, 0, "minecraft:chest")
+  t.chestStock = { { name = "minecraft:coal", count = 64 } }
+
+  move.pos, t.pos = { x = 0, y = -6, z = 0 }, { x = 0, y = -6, z = 0 }
+  for i = 1, 16 do t.slots[i] = { name = "minecraft:diamond_ore", count = 64 } end
+  t.fuel = 1500                                 -- under fuelTopUp, over a round trip
+
+  local ok, why = move.dumpRun()
+  check(ok, "the dump run succeeds", why)
+  check(t.fuel > 1500, "and the tank was topped up while it was there", t.fuel)
+  check(move.dumpRuns == 1 and move.fuelRuns == 0,
+    "without counting as a separate fuel run",
+    move.dumpRuns .. "/" .. move.fuelRuns)
 end
 
 --------------------------------------------------------------------------------

@@ -194,6 +194,34 @@ function M.new(opts)
   turtle.dropUp   = function() return dropItems("up") end
   turtle.dropDown = function() return dropItems("down") end
 
+  -- What a container yields to suck(), as a queue of {name, count}. Empty by
+  -- default: a chest a player has not stocked is the normal case and the code
+  -- has to cope with it.
+  t.chestStock = {}
+
+  local function suckItems(dir)
+    local x, y, z = ahead(dir)
+    local block = t.world[key(x, y, z)]
+    if not block or not CONTAINER[block] then return false, "No container to take from" end
+    if #t.chestStock == 0 then return false, "No items to take" end
+
+    local entry = t.chestStock[1]
+    local take = math.min(entry.count, 64)
+    local free
+    for i = 1, 16 do if not t.slots[i] then free = i break end end
+    if not free then return false, "No space in inventory" end
+
+    t.slots[free] = { name = entry.name, count = take }
+    entry.count = entry.count - take
+    if entry.count <= 0 then table.remove(t.chestStock, 1) end
+    t.sucked = (t.sucked or 0) + take
+    return true
+  end
+
+  turtle.suck     = function() return suckItems("forward") end
+  turtle.suckUp   = function() return suckItems("up") end
+  turtle.suckDown = function() return suckItems("down") end
+
   turtle.select          = function(n) t.sel = n return true end
   turtle.getSelectedSlot = function() return t.sel end
   turtle.getItemCount    = function(n) local s = t.slots[n or t.sel] return s and s.count or 0 end

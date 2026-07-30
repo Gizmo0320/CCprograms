@@ -10,6 +10,7 @@
 # installer that silently ships an incomplete tree.
 
 startup.lua
+update.lua
 miner.lua
 server.lua
 remote.lua

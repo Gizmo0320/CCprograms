@@ -179,6 +179,33 @@ do
 end
 
 --------------------------------------------------------------------------------
+say("remote: UPDATE reaches the fleet by whichever route is live")
+--------------------------------------------------------------------------------
+do
+  -- Through the server when there is one.
+  local sent = runRemote({
+    { "rednet_message", 50, fleetOf(7, 9), config.protocol },
+    { "char", "u" },
+  })
+  local cmd = find(sent, function(s) return s.msg.type == "command" end)
+  check(cmd and cmd.msg.action == "update", "with a server it goes through it",
+    cmd and cmd.msg.action)
+  check(cmd and cmd.to == 50, "addressed to the server", cmd and cmd.to)
+
+  -- Straight at the turtles when there is not, so a fleet is still updatable
+  -- with the server down -- which is exactly when you may need to fix it.
+  local sent2 = runRemote({
+    { "rednet_message", 7, statusOf(7, "idle"), config.protocol },
+    { "rednet_message", 9, statusOf(9, "idle"), config.protocol },
+    { "char", "u" },
+  })
+  check(find(sent2, function(s) return s.msg.type == "update" and s.to == 7 end) ~= nil,
+    "without one it goes direct to each turtle")
+  check(find(sent2, function(s) return s.msg.type == "update" and s.to == 9 end) ~= nil,
+    "to all of them")
+end
+
+--------------------------------------------------------------------------------
 say("remote: submitting a split job")
 --------------------------------------------------------------------------------
 do

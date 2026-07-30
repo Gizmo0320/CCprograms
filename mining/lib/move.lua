@@ -25,6 +25,7 @@ local dig     = { forward = turtle.dig,      up = turtle.digUp,      down = turt
 local attack  = { forward = turtle.attack,   up = turtle.attackUp,   down = turtle.attackDown   }
 local go      = { forward = turtle.forward,  up = turtle.up,         down = turtle.down         }
 local drop    = { forward = turtle.drop,     up = turtle.dropUp,     down = turtle.dropDown     }
+local suck    = { forward = turtle.suck,     up = turtle.suckUp,     down = turtle.suckDown     }
 local place   = { forward = turtle.place,    up = turtle.placeUp,    down = turtle.placeDown    }
 
 --------------------------------------------------------------------------------
@@ -40,6 +41,7 @@ move.gps         = false      -- true if pos is a real world coordinate
 move.returning   = false      -- suspends the fuel guard and the return signal
 move.dumping     = false      -- true for the whole walk-home-and-back dump run
 move.dumpRuns    = 0          -- how many times the turtle has been home to empty
+move.fuelRuns    = 0          -- and how many times it has been home to refuel
 
 -- False on a turtle with no tool -- a scout, which spends both upgrade slots on
 -- a geo scanner and a modem. Without this every blocked move would burn the
@@ -99,10 +101,15 @@ function move.fuelToHome()
        + math.abs(move.pos.z - h.z)
 end
 
---- Burn anything in the whitelist. Returns the new fuel level.
-function move.refuel()
+--- Burn carried fuel from the whitelist. Returns the new fuel level.
+--
+-- `upTo` stops it burning the whole stack when only a top-up is wanted, so a
+-- turtle does not consume a chest's worth of coal to sit at its fuel limit.
+function move.refuel(upTo)
   local selected = turtle.getSelectedSlot()
   for slot = 1, 16 do
+    if upTo and turtle.getFuelLevel() ~= "unlimited"
+       and turtle.getFuelLevel() >= upTo then break end
     local item = turtle.getItemDetail(slot)
     if item and config.fuel[item.name] then
       turtle.select(slot)
@@ -120,11 +127,23 @@ function move.hasFuel(extra)
   return level >= move.fuelToHome() + (extra or 1) + config.fuelMargin
 end
 
+--- Escalates the same way the inventory guard does: burn what it carries, then
+--- go and fetch more, and only then admit the job cannot continue.
 local function fuelGuard()
   if move.returning then return end          -- getting home outranks the margin
   if move.hasFuel(1) then return end
+
   move.refuel()
   if move.hasFuel(1) then return end
+
+  -- Not while already travelling: move.fuelRun walks home through move.step,
+  -- which lands back here, and a guard that calls the thing that calls it is a
+  -- stack overflow with extra steps.
+  if not move.dumping then
+    move.fuelRun()
+    if move.hasFuel(1) then return end
+  end
+
   move.signal("fuel", ("%s fuel left, %d needed to reach home")
     :format(tostring(turtle.getFuelLevel()), move.fuelToHome() + config.fuelMargin))
 end
@@ -247,24 +266,78 @@ local function depositAtHome()
   return true, moved
 end
 
---- Walk home, empty into the container there, and walk back to carry on.
---- Returns true if the turtle is back at work with room in its inventory.
+--- Take fuel from a container at home and burn it. Returns true plus the new
+--- level, or false plus a reason.
+local function takeFuelAtHome()
+  local found
+  for _, dir in ipairs({ "down", "forward", "up" }) do
+    local seen, block = inspect[dir]()
+    if seen and config.container[block.name] then found = dir break end
+  end
+  if not found then return false, "no container at home" end
+
+  local selected = turtle.getSelectedSlot()
+  local before = turtle.getFuelLevel()
+
+  local function freeSlot()
+    for slot = 1, 16 do
+      if turtle.getItemCount(slot) == 0 then return slot end
+    end
+  end
+
+  -- A turtle that has run out of fuel has usually also run out of room: it has
+  -- been mining until it could not move. There would be nowhere to put the coal.
+  -- It is standing at a container, though, so the fix is to empty into it first.
+  if not freeSlot() then depositAtHome() end
+
+  -- Pull, burn, repeat. A chest holds far more than sixteen slots, so one grab
+  -- is not necessarily a tankful, and suck() takes whatever is at the front
+  -- rather than the coal specifically.
+  for _ = 1, 16 do
+    local level = turtle.getFuelLevel()
+    if level ~= "unlimited" and level >= config.fuelTarget then break end
+
+    local free = freeSlot()
+    if not free then
+      turtle.select(selected)
+      return false, "no room to take fuel"
+    end
+
+    turtle.select(free)
+    local got = suck[found]()
+    if not got then break end                 -- chest is empty
+
+    local item = turtle.getItemDetail(free)
+    if item and config.fuel[item.name] then
+      turtle.refuel()
+    else
+      -- Not fuel. Put it back rather than carting the chest's contents around
+      -- the mine, and stop: the chest is not a fuel chest.
+      drop[found]()
+      turtle.select(selected)
+      return false, "no fuel in the container at home"
+    end
+  end
+
+  turtle.select(selected)
+  local now = turtle.getFuelLevel()
+  if now == before then return false, "no fuel in the container at home" end
+  return true, now
+end
+
+--- Walk home, do something there, and come back to exactly where work stopped.
 --
--- This is why a vanilla world can run a job longer than sixteen stacks. The
--- pattern never learns it happened: it resumes on the exact block and heading it
--- left, so as far as the traversal is concerned the turtle never moved.
-function move.dumpRun()
-  if not config.dumpAtHome then return false, "dump-at-home disabled" end
+-- Shared by the dump run and the fuel run, which differ only in what they do at
+-- base and how much fuel they insist on before setting off. The pattern never
+-- learns any of it happened: the turtle resumes on the block and heading it
+-- left, so as far as the traversal is concerned it never moved.
+local function homeRun(kind, reserve, atHome)
   if move.dumping or move.returning then return false, "already travelling" end
 
-  -- A round trip, not the usual one-way reserve. A turtle that walks home to
-  -- empty and cannot get back out is worse off than one that stops where it is.
   local level = turtle.getFuelLevel()
   if level ~= "unlimited" then
-    local needed = 2 * move.fuelToHome() + config.fuelMargin
-    if level < needed then
-      return false, ("not enough fuel for a round trip (%d < %d)"):format(level, needed)
-    end
+    local needed, why = reserve(level)
+    if needed then return false, why end
   end
 
   local resume = { pos = move.copyPos(), heading = move.heading }
@@ -279,8 +352,8 @@ function move.dumpRun()
     return false, "could not reach home: " .. tostring(homeWhy)
   end
 
-  local emptied, why = depositAtHome()
-  if not emptied then
+  local ok, why = atHome()
+  if not ok then
     move.dumping = false
     return false, why
   end
@@ -292,8 +365,56 @@ function move.dumpRun()
   if not back then return false, "could not return to the job: " .. tostring(backWhy) end
 
   move.face(resume.heading)
-  move.dumpRuns = move.dumpRuns + 1
   return true
+end
+
+--- Walk home, empty into the container there, and walk back to carry on.
+--- This is why a vanilla world can run a job longer than sixteen stacks.
+function move.dumpRun()
+  if not config.dumpAtHome then return false, "dump-at-home disabled" end
+
+  local ok, why = homeRun("dump", function(level)
+    -- A round trip, not the usual one-way reserve. A turtle that walks home to
+    -- empty and cannot get back out is worse off than one that stopped where it
+    -- was, because at least that one still had a full load to show for it.
+    local needed = 2 * move.fuelToHome() + config.fuelMargin
+    if level < needed then
+      return true, ("not enough fuel for a round trip (%d < %d)"):format(level, needed)
+    end
+  end, function()
+    local emptied, emptyWhy = depositAtHome()
+    if not emptied then return false, emptyWhy end
+    -- Already standing at the chest, so top the tank up while we are here. A
+    -- separate trip for this later would cost the whole walk twice over.
+    local fuel = turtle.getFuelLevel()
+    if config.refuelAtHome and fuel ~= "unlimited" and fuel < config.fuelTopUp then
+      takeFuelAtHome()
+    end
+    return true
+  end)
+
+  if ok then move.dumpRuns = move.dumpRuns + 1 end
+  return ok, why
+end
+
+--- Walk home, take fuel from the container there, and walk back.
+--
+-- The reserve here is one way, not a round trip, and that is the whole point:
+-- this run happens *because* fuel is short, so insisting on enough to get back
+-- first would refuse at exactly the moment it is needed. The return leg is paid
+-- for out of the fuel it collects.
+function move.fuelRun()
+  if not config.refuelAtHome then return false, "refuel-at-home disabled" end
+
+  local ok, why = homeRun("fuel", function(level)
+    local needed = move.fuelToHome()
+    if level < needed then
+      return true, ("not enough fuel to reach home (%d < %d)"):format(level, needed)
+    end
+  end, takeFuelAtHome)
+
+  if ok then move.fuelRuns = move.fuelRuns + 1 end
+  return ok, why
 end
 
 --- Slot 16 occupied means the next dig could void an item, so make room now.

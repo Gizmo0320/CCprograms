@@ -333,11 +333,15 @@ local function drawFleet()
   rule(y); y = y + 1
 
   at(1, y, "Target", colours.lightGrey)
-  at(8, y, target and ("turtle " .. target) or "ALL",
+  at(8, y, target and ("#" .. target) or "ALL",
     target and colours.white or colours.yellow)
-  if target then
-    button(W - 4, y, 5, "ALL", colours.grey, colours.white, function() target = nil end)
-  end
+  button(14, y, 4, "ALL", target and colours.grey or colours.blue, colours.white,
+    function() target = nil end)
+  -- Safe to leave unguarded: a turtle refuses an update while it is working, so
+  -- the worst this can do is reboot the idle half of the fleet.
+  button(19, y, 7, "UPDATE", colours.brown, colours.white, function()
+    flashNow(command("update"), colours.cyan, 4)
+  end)
   y = y + 1
 
   local half = math.floor((W - 1) / 2)
@@ -368,7 +372,7 @@ local function drawFleet()
   y = y + 1
 
   statusLine(y)
-  drawFooter(y + 1, "tab  p/r/a/c cmds  q quit")
+  drawFooter(y + 1, "tab  p/r/a/c  u update  q")
 end
 
 --------------------------------------------------------------------------------
@@ -653,6 +657,8 @@ local function main()
         flashNow(command("return"), colours.magenta)
       elseif key == "s" then
         submit()
+      elseif key == "u" then
+        flashNow(command("update"), colours.cyan, 4)
       elseif key == "a" then
         if os.clock() < armedAbort then
           armedAbort = 0

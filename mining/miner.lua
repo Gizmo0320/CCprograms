@@ -87,6 +87,8 @@ local function buildStatus()
     done     = ctl.done,
     total    = ctl.total,
     dumps    = move.dumpRuns,
+    refuels  = move.fuelRuns,
+    fuelMax  = turtle.getFuelLimit and turtle.getFuelLimit() or nil,
     message  = ctl.message,
   }
 end
@@ -322,6 +324,18 @@ local function listenerTask()
       elseif t == "status" then
         reply(id, buildStatus())
 
+      elseif t == "update" then
+        -- Never mid-job. Swapping lib/move.lua underneath a running quarry
+        -- leaves a turtle halfway down a hole running half of two versions,
+        -- and the reboot afterwards would abandon the job where it stands.
+        if ctl.state == "mining" or ctl.state == "returning" or ctl.job then
+          reply(id, { type = "error", reason = "busy; not updating mid-job" })
+        else
+          reply(id, { type = "ack", of = t })
+          ctl.update = { branch = msg.branch, repo = msg.repo }
+          ctl.shutdown = true
+        end
+
       elseif t == "shutdown" then
         ctl.shutdown = true
         ctl.abort    = true
@@ -490,6 +504,15 @@ local function main(args)
     parallel.waitForAny(workerTask, listenerTask, heartbeatTask)
   else
     workerTask()
+  end
+
+  -- Run the updater after the tasks have stopped, not from inside the listener:
+  -- update.lua reboots, and rebooting out of one branch of parallel.waitForAny
+  -- while a job is still unwinding in another is how a half-written state file
+  -- happens.
+  if ctl.update then
+    log(colours.cyan, "Updating from GitHub...")
+    shell.run("/update.lua", ctl.update.branch or "", ctl.update.repo or "")
   end
 end
 

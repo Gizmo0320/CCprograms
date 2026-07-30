@@ -334,6 +334,33 @@ do
 end
 
 --------------------------------------------------------------------------------
+say("server: relays a fleet-wide update, carrying branch and repo")
+--------------------------------------------------------------------------------
+do
+  local sent, _, err = runServer({
+    { from = 7, msg = statusOf(7, "idle") },
+    { from = 9, msg = statusOf(9, "idle") },
+    { from = 99, msg = { type = "command", target = "all", action = "update" } },
+    { from = 99, msg = { type = "command", target = 7, action = "update",
+                         branch = "testing", repo = "someone/fork" } },
+    { wait = 0.2, from = 7, msg = statusOf(7, "idle") },
+  })
+  check(err == nil, "the server runs", err)
+
+  local updates = countOf(sent, function(s) return s.msg.type == "update" end)
+  check(updates == 3, "every turtle gets it, then the targeted one", updates)
+
+  local forked = find(sent, function(s)
+    return s.msg.type == "update" and s.msg.branch == "testing"
+  end)
+  check(forked ~= nil, "a branch and repo are forwarded")
+  check(forked and forked.msg.repo == "someone/fork",
+    "so a fleet can be pointed at a fork without reinstalling",
+    forked and forked.msg.repo)
+  check(forked and forked.to == 7, "to just the targeted turtle", forked and forked.to)
+end
+
+--------------------------------------------------------------------------------
 say("server: cancelling a running job recalls its turtle")
 --------------------------------------------------------------------------------
 do

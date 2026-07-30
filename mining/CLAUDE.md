@@ -36,6 +36,7 @@ Pocket -> turtle:
 - `{type="pause"}` / `{type="resume"}` / `{type="abort"}`
 - `{type="status"}` (explicit request)
 - `{type="return"}` (come home now, abandon job)
+- `{type="update", branch=<string>, repo=<string>}` — run update.lua and reboot. Refused while mining or returning: swapping `lib/move.lua` underneath a running quarry leaves a turtle halfway down a hole running half of two versions. The updater runs *after* `parallel.waitForAny` returns, never from inside the listener, because rebooting out of one branch while a job unwinds in another is how a half-written state file happens.
 
 A `start` may also carry `origin={x,y,z}`, `facing=<0-3>` and `jobId=<string>`. The origin is a **waypoint, not a new home**: `move.home` stays the block the player placed the turtle on, because that is where its dump chest is. A turtle with no GPS fix refuses a job carrying an origin rather than navigating an absolute coordinate in its own dead-reckoned frame.
 
@@ -74,7 +75,7 @@ Pattern code must never call `turtle.forward()` etc. directly. Wrap all movement
 
 - **Retry on failure.** Mob blocking -> `turtle.attack()` then retry. Gravel/sand -> dig again, it refills. Cap retries and surface an error rather than looping forever.
 - **Position tracking.** Maintain `{x, y, z, heading}` in memory. Calibrate against `gps.locate()` at startup if a GPS cluster is reachable; otherwise dead-reckon from a user-supplied origin.
-- **Fuel guard.** Before each move, check `turtle.getFuelLevel()` against the cost of returning home. If the margin is gone, abort the job and return while it still can. Attempt `turtle.refuel()` from inventory first.
+- **Fuel guard.** Before each move, check `turtle.getFuelLevel()` against the cost of returning home. Escalate the same way the inventory guard does: burn carried fuel, then walk home and take more from the chest, and only then raise the signal. A fuel run reserves **one way**, not a round trip — it happens because fuel is short, so demanding enough to get back would refuse exactly when it is needed. `move.dumping` is what stops the guard re-entering the run that walks home through `move.step`.
 - **Inventory guard.** When slot 16 is occupied, escalate: drop filtered junk (a config table), then a carried ender chest, then walk home to the container there and come back to the exact block and heading it left. A dump run must reserve fuel for the round trip, not just the leg home.
 - **Bedrock and lava handling.** `turtle.inspect()` before digging; refuse to dig into lava and try to seal it with a junk block. Anything still unbreakable is ridden over — climb, cross, drop back into the row when there is a floor to drop into — rather than treated as a hard stop. Never dig blind, including upward: lava above pours onto the turtle the instant the block goes.
 
@@ -115,6 +116,17 @@ Two timing constants earn their keep and are easy to get wrong:
 4. rednet listener + `parallel` integration in `miner.lua`
 5. Pure fleet logic (`lib/fleet.lua`), then `server.lua` over it
 6. `remote.lua` UI last — it only renders what the protocol already provides
+
+## Install and update
+
+`install.lua` and `update.lua` both download the list in `manifest.txt` and then
+the files in it. `test/spec.lua` checks that manifest against the repo in both
+directions, so adding a library and forgetting the manifest is a test failure
+here rather than a `require` error on someone else's turtle.
+
+Both fetch everything before writing anything, and both cache-bust: raw
+GitHub serves a stale copy for a few minutes, and an update that hands back the
+version you already have is a baffling way to lose an afternoon.
 
 ## Testing
 

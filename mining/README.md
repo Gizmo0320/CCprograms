@@ -28,6 +28,8 @@ mean a turtle you cannot recall.
 | `server.lua` | computer | fleet roster, job queue, dispatch, fleet table |
 | `remote.lua` | pocket computer | fleet view, deploy, queue |
 | `startup.lua` | all three | autostart; picks the right program for the host |
+| `install.lua` | all | first-time install from GitHub |
+| `update.lua` | all | pull the latest version and reboot |
 | `lib/config.lua` | all | protocol name, junk/fuel filters, timings, margins |
 | `lib/specs.lua` | all | pattern names, ranges and estimates (no `turtle` API) |
 | `lib/fleet.lua` | server | roster, queue, assignment, region splitting |
@@ -54,6 +56,30 @@ also labels the computer by role, which is what makes the fleet table readable.
 
 To install from a fork or a branch: `install.lua <branch> <owner/repo>`.
 
+## Updating
+
+On any computer:
+
+```
+update            fetch the latest and reboot
+update --check    say what would change, and change nothing
+```
+
+It compares every file against the repo and writes only what differs, so
+"already up to date" costs nothing but the download. As with installing, it
+fetches everything before writing anything.
+
+From the pocket, `UPDATE` on the fleet screen (or `u`) pushes it to every
+turtle at once — updating a dozen turtles by hand is exactly the chore worth
+automating. **A turtle refuses an update while it is working**, because swapping
+`lib/move.lua` underneath a running quarry leaves it halfway down a hole running
+half of two versions, and the reboot afterwards would abandon the job. Pause or
+let the fleet finish, then update.
+
+The server does not update itself from that push. It is one machine at your base
+with a keyboard, and a bad push that takes out the thing coordinating the
+recovery is a worse day than walking over and typing `update`.
+
 Installing by hand instead: copy the tree to `/`. `lib/` must sit beside the
 program that loads it, since CC:T resolves `require` relative to the program's
 directory.
@@ -62,7 +88,10 @@ directory.
 
 1. Advanced mining turtle with a **diamond pickaxe** and a **wireless modem**.
    Wireless (or ender) only — a wired modem is ignored.
-2. Fuel in the inventory (coal, charcoal, coal blocks — see `config.fuel`).
+2. Fuel in the inventory (coal, charcoal, coal blocks — see `config.fuel`), and
+   **fuel in the chest at its start position**. Burning what it carries already
+   happens automatically; the chest is where the next lot comes from, which is
+   otherwise the thing that ends a long job.
 3. **A chest next to the start position.** When the inventory fills, the turtle
    walks home, empties into it, walks back to the exact block it left and
    carries on. This is what lets a job run past sixteen stacks in a vanilla
@@ -229,6 +258,16 @@ validated against the same ranges the pocket computer enforces.
   fuel for the *round trip*, not just the leg home — a turtle that empties
   itself and then cannot get back out is worse off than one that stopped where
   it was.
+- **Running low on fuel escalates the same way.** Burn what it carries, then
+  walk home and take more from the chest, and only then stop. That run reserves
+  only enough to get home *one way*, unlike a dump run: it happens precisely
+  because fuel is short, so demanding a round trip would refuse at exactly the
+  moment it is needed. The return leg is paid for out of what it collects.
+  A turtle that has mined until it ran dry is usually also full, so it empties
+  into the chest first to make room for the coal.
+- **It tops up while it is already home.** A dump run that finds fuel below
+  `config.fuelTopUp` fills the tank before heading back, because the turtle is
+  standing at the chest anyway and a separate trip later costs the walk twice.
 - **Resume granularity is one layer.** The state file is written at the top of
   each layer — or, for `strip`, at the corridor before each branch pair, never
   mid-branch. It records position, heading, serpentine direction and progress,

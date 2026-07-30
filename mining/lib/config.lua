@@ -111,6 +111,22 @@ config.dumpChest = {
 -- is what lets a vanilla world run a job longer than 16 stacks.
 config.dumpAtHome = true
 
+-- Same idea for fuel: when what it is carrying runs out, walk home and take
+-- more from a container at the start position. Burning carried fuel already
+-- happens automatically -- this is about where the next lot comes from, which
+-- is otherwise the thing that ends a long job.
+config.refuelAtHome = true
+
+-- How much fuel to try to hold after a top-up. The turtle burns fuel out of the
+-- chest until it reaches this, so it is the size of a tank rather than a
+-- threshold. Roughly a stack of coal.
+config.fuelTarget = 5000
+
+-- Top up during a dump run once fuel falls below this, even though nothing has
+-- asked for it. The turtle is already standing at the chest, so the fuel is
+-- free at that point; making a separate trip for it later is not.
+config.fuelTopUp = 2000
+
 -- Blocks that accept turtle.drop(). Wider than config.dumpChest, which is the
 -- stricter "portable and reclaimable" list: these only have to sit at home and
 -- hold things. The turtle checks against this before dropping, because dropping
