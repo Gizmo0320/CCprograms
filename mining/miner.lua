@@ -1,6 +1,6 @@
 --- Mining turtle controller. Runs on an advanced mining turtle.
 --
--- Listens on rednet for commands from remote.lua, broadcasts a status
+-- Listens on the fleet channel for commands from remote.lua, broadcasts a status
 -- heartbeat, and executes mining patterns. Resumes an unfinished job on boot.
 --
 -- Usage:  miner            wait for a command from the pocket computer
@@ -12,6 +12,7 @@ local state    = require("lib.state")
 local patterns = require("lib.patterns")
 local specs    = require("lib.specs")
 local scanner  = require("lib.scanner")
+local net      = require("lib.net")
 
 -- A turtle has exactly two upgrade slots. A miner spends them on a pickaxe and
 -- a wireless modem; a scout spends them on a geo scanner and a wireless modem
@@ -58,15 +59,7 @@ end
 -- Networking
 --------------------------------------------------------------------------------
 
-local function openModem()
-  for _, side in ipairs(peripheral.getNames()) do
-    if peripheral.getType(side) == "modem" and peripheral.call(side, "isWireless") then
-      rednet.open(side)
-      return side
-    end
-  end
-  return nil
-end
+local function openModem() return net.open() end
 
 local function buildStatus()
   return {
@@ -94,11 +87,11 @@ local function buildStatus()
 end
 
 local function broadcast(msg)
-  rednet.broadcast(msg, config.protocol)
+  net.broadcast(msg)
 end
 
 local function reply(id, msg)
-  if id then rednet.send(id, msg, config.protocol) end
+  if id then net.send(id, msg) end
 end
 
 local function report(reason)
@@ -261,7 +254,7 @@ end
 
 local function listenerTask()
   while not ctl.shutdown do
-    local id, msg = rednet.receive(config.protocol, 1)
+    local id, msg = net.receive(1)
     if type(msg) == "table" and type(msg.type) == "string" then
       ctl.remote = id
       local t = msg.type
@@ -429,7 +422,8 @@ local function main(args)
 
   local side = openModem()
   if side then
-    log(colours.white, "Modem on " .. side .. ", protocol '" .. config.protocol .. "'")
+    log(colours.white, ("Modem on %s, fleet '%s' channel %d")
+      :format(side, config.protocol, config.channel))
   else
     log(colours.orange, "No wireless modem: running standalone, no remote control.")
   end

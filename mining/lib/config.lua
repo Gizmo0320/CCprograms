@@ -7,13 +7,19 @@
 
 local config = {}
 
--- The rednet protocol every program speaks, and what separates one fleet from
--- another. Two fleets on different protocols never see each other's messages,
--- even sharing a world and the same modem channels.
+-- The modem channel every program on this fleet talks on: the port. A modem
+-- never raises an event for a channel it has not opened, so two fleets on
+-- different channels genuinely do not touch -- unlike rednet, which puts
+-- everyone on the same two channels and filters after delivery.
 --
--- There is no port number to set. rednet fixes its channels (a computer's own
--- id, and 65535 for broadcasts) and filters delivery by this string instead, so
--- the protocol *is* the port. install.lua writes it into /fleet.cfg.
+-- Any number from 1 to 65535. Pick something out of the way on a shared server.
+-- install.lua asks for it and writes it into /fleet.cfg.
+config.channel = 3141
+
+-- A name for the fleet, carried in every frame. The channel does the real
+-- separating; this catches two fleets accidentally configured on the same
+-- number, which is otherwise a confusing failure where turtles quietly take
+-- orders from the wrong base.
 config.protocol = "mining"
 
 -- Where the resumable job state lives.

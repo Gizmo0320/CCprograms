@@ -10,7 +10,7 @@ Three Lua programs for the CC: Tweaked Minecraft mod:
 
 `miner.lua` runs two roles off the same code. A turtle has exactly two upgrade slots: a **miner** spends them on a pickaxe and a wireless modem, a **scout** on an Advanced Peripherals geo scanner and a wireless modem. Carrying a scanner is what makes a turtle a scout, and it is also what makes it unable to dig — `move.canDig` is false for scouts, so a blocked move fails immediately instead of burning the whole retry budget attacking thin air.
 
-All three communicate over rednet using the protocol name `"mining"`.
+All three communicate over a raw modem channel via `lib/net.lua` -- not rednet. The channel is configurable per fleet, which is what lets several independent setups share a world.
 
 Normal routing is pocket → server → turtles. Turtles keep their own listener, so the pocket falls back to commanding them directly when no server answers — a server whose chunk unloads must never mean a turtle nobody can recall.
 
@@ -26,7 +26,7 @@ Normal routing is pocket → server → turtles. Turtles keep their own listener
 
 ### Message protocol
 
-Every rednet message is a table with a `type` field. Everything speaks the one protocol and is disambiguated by `type`, which is what lets the pocket fall back to talking to turtles directly with no second channel to maintain.
+Every message is a table with a `type` field, carried in a `lib/net` frame. Everything speaks the one protocol and is disambiguated by `type`, which is what lets the pocket fall back to talking to turtles directly with no second channel to maintain.
 
 Pocket -> turtle:
 - `{type="start", pattern=<string>, ...params}` — the parameter keys are
@@ -126,17 +126,27 @@ It is deliberately **not** in `manifest.txt`. `update` replaces every file it
 lists, so a per-fleet setting kept in one would survive exactly until the first
 update and then quietly reunite two fleets meant to be separate.
 
-`config.protocol` is what isolates one fleet from another. There is no port to
-set: `rednet.open` always opens the computer's own id and 65535, and the
-protocol is filtered at the **receive** end (see `rednet.receive` in the rom).
-Isolation is therefore logical, not physical -- both fleets still transmit on
-the same channels, and a `repeat` relay carries both.
+`config.channel` is the port and the real isolation. `lib/net.lua` talks to the
+modem directly -- `modem.open` / `modem.transmit` -- rather than through rednet,
+because rednet always opens the same two channels (the computer's own id and
+65535) and discards non-matching protocols only *after* delivery. A modem never
+raises an event for a channel it has not opened, so channels separate fleets
+where a protocol string only filters them.
 
-`server.lua` claims the fleet with `rednet.host(config.protocol, "fleet")`,
-which errors if another computer already holds it. That is a deliberate hard
-stop: two servers on one fleet would both dispatch and both reconcile, and
-nothing would look wrong until two turtles turned up in the same lane. It also
-makes the server findable with `rednet.lookup`.
+`config.protocol` still rides in every frame as a second check, catching two
+fleets accidentally configured on the same channel.
+
+What lib/net has to do that rednet did for us: carry `from`/`to` in the frame,
+since a channel is shared and a `modem_message` has no sender; and drop frames
+we sent ourselves, since broadcasts come back on a shared channel and a server
+folding its own heartbeats into the roster would be talking to itself.
+
+`net.decode` is split out from `net.receive` because remote.lua runs its own
+event loop -- it has a UI to redraw -- and cannot sit blocked inside receive.
+
+`server.lua` asks "server?" on startup and stands down if anything answers
+"server!". Two servers on one fleet would both dispatch and both reconcile, and
+nothing would look wrong until two turtles turned up in the same lane.
 
 Two things to keep right when adding config:
 

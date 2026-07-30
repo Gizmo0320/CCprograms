@@ -67,19 +67,34 @@ local POCKET_W, POCKET_H = 26, 20
 local realSize = term.getSize
 term.getSize = function() return POCKET_W, POCKET_H end
 
-local realSend, realBroadcast = rednet.send, rednet.broadcast
+-- remote.lua talks through lib/net now, so that is what is stood in for.
+local net = require("lib.net")
+local realSend, realBroadcast, realOpen = net.send, net.broadcast, net.open
+
+--- A modem_message event carrying a lib/net frame, which is what the remote
+--- now decodes. Built here rather than calling net.send so the test drives the
+--- program through the same event the modem would deliver.
+local function frame(from, body)
+  return { "modem_message", "back", config.channel, config.channel,
+           { fleet = config.protocol, from = from, to = "*", body = body } }
+end
 
 --- Run remote.lua against a scripted set of events, capturing the wire.
 local function runRemote(events)
   local sent = {}
-  rednet.send = function(id, msg) sent[#sent + 1] = { to = id, msg = msg } return true end
-  rednet.broadcast = function(msg) sent[#sent + 1] = { to = "broadcast", msg = msg } return true end
+  net.open = function()
+    net.channel = config.channel
+    net.id = os.getComputerID()
+    return "back"
+  end
+  net.send = function(id, msg) sent[#sent + 1] = { to = id, msg = msg } return true end
+  net.broadcast = function(msg) sent[#sent + 1] = { to = "broadcast", msg = msg } return true end
 
   for _, e in ipairs(events) do os.queueEvent(table.unpack(e)) end
   os.queueEvent("char", "q")
 
   local ok, err = pcall(dofile, "/remote.lua")
-  rednet.send, rednet.broadcast = realSend, realBroadcast
+  net.send, net.broadcast, net.open = realSend, realBroadcast, realOpen
   return sent, ok, err
 end
 
@@ -128,8 +143,8 @@ say("remote: DIRECT mode commands turtles itself")
 --------------------------------------------------------------------------------
 do
   local sent, ok, err = runRemote({
-    { "rednet_message", 7, statusOf(7, "mining"), config.protocol },
-    { "rednet_message", 9, statusOf(9, "idle"), config.protocol },
+    frame(7, statusOf(7, "mining")),
+    frame(9, statusOf(9, "idle")),
     { "char", "p" },                     -- no selection: pause everyone
   })
   check(ok, "it runs", err)
@@ -147,8 +162,8 @@ say("remote: selecting a turtle narrows the target")
 do
   -- Roster rows start at y=4 on the fleet screen (1 tabs, 2 rule, 3 header).
   local sent, ok, err = runRemote({
-    { "rednet_message", 7, statusOf(7, "mining"), config.protocol },
-    { "rednet_message", 9, statusOf(9, "idle"), config.protocol },
+    frame(7, statusOf(7, "mining")),
+    frame(9, statusOf(9, "idle")),
     { "mouse_click", 1, 3, 4 },          -- tap the first roster row (turtle 7)
     { "char", "c" },                     -- recall
   })
@@ -164,7 +179,7 @@ say("remote: SERVER mode routes everything through the server")
 --------------------------------------------------------------------------------
 do
   local sent, ok, err = runRemote({
-    { "rednet_message", 50, fleetOf(7, 9), config.protocol },
+    frame(50, fleetOf(7, 9)),
     { "char", "p" },
   })
   check(ok, "it runs", err)
@@ -184,7 +199,7 @@ say("remote: UPDATE reaches the fleet by whichever route is live")
 do
   -- Through the server when there is one.
   local sent = runRemote({
-    { "rednet_message", 50, fleetOf(7, 9), config.protocol },
+    frame(50, fleetOf(7, 9)),
     { "char", "u" },
   })
   local cmd = find(sent, function(s) return s.msg.type == "command" end)
@@ -195,8 +210,8 @@ do
   -- Straight at the turtles when there is not, so a fleet is still updatable
   -- with the server down -- which is exactly when you may need to fix it.
   local sent2 = runRemote({
-    { "rednet_message", 7, statusOf(7, "idle"), config.protocol },
-    { "rednet_message", 9, statusOf(9, "idle"), config.protocol },
+    frame(7, statusOf(7, "idle")),
+    frame(9, statusOf(9, "idle")),
     { "char", "u" },
   })
   check(find(sent2, function(s) return s.msg.type == "update" and s.to == 7 end) ~= nil,
@@ -212,7 +227,7 @@ do
   -- Deploy screen rows: 1 tabs, 2 rule, 3 anchor, 4 mode, 5..7 quarry params,
   -- 8 lanes. x=15 is inside a value field.
   local sent, ok, err = runRemote({
-    { "rednet_message", 50, fleetOf(7, 9), config.protocol },
+    frame(50, fleetOf(7, 9)),
     { "key", keys.tab },                 -- to DEPLOY
     { "mouse_click", 1, 24, 3 },         -- SET anchor
     { "mouse_click", 1, 15, 5 },         -- click Width
@@ -251,7 +266,7 @@ say("remote: refuses to submit a placed job with no anchor")
 do
   gpsFix = nil
   local sent, ok, err = runRemote({
-    { "rednet_message", 50, fleetOf(7), config.protocol },
+    frame(50, fleetOf(7)),
     { "key", keys.tab },
     { "mouse_click", 1, 24, 3 },         -- SET, but there is no fix
     { "char", "s" },
@@ -267,7 +282,7 @@ say("remote: cancelling from the queue screen")
 --------------------------------------------------------------------------------
 do
   local sent, ok, err = runRemote({
-    { "rednet_message", 50, fleetOf(7, 9), config.protocol },
+    frame(50, fleetOf(7, 9)),
     { "key", keys.tab }, { "key", keys.tab },   -- to QUEUE
     -- 1 tabs, 2 rule, 3 counts, 4 first job row.
     { "mouse_click", 1, 3, 4 },
@@ -281,7 +296,7 @@ do
   -- And the row below it is the next job, so the list is in queue order rather
   -- than whatever order the table happened to iterate in.
   local sent2 = runRemote({
-    { "rednet_message", 50, fleetOf(7, 9), config.protocol },
+    frame(50, fleetOf(7, 9)),
     { "key", keys.tab }, { "key", keys.tab },
     { "mouse_click", 1, 3, 5 },
   })
@@ -316,7 +331,7 @@ do
 
   -- A full roster, so the fleet table is drawn at its tallest.
   local big = fleetOf(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)
-  local events = { { "rednet_message", 50, big, config.protocol } }
+  local events = { frame(50, big) }
   -- Visit every screen, and on DEPLOY every pattern.
   for _ = 1, 3 do
     events[#events + 1] = { "key", keys.tab }
@@ -347,7 +362,7 @@ say("remote: q does not quit while a value is being typed")
 --------------------------------------------------------------------------------
 do
   local sent, ok, err = runRemote({
-    { "rednet_message", 50, fleetOf(7), config.protocol },
+    frame(50, fleetOf(7)),
     { "key", keys.tab },
     { "mouse_click", 1, 24, 3 },         -- anchor
     { "mouse_click", 1, 15, 5 },         -- edit Width

@@ -8,12 +8,13 @@
 -- modem cannot hear a turtle at Y-50 and the server is reduced to guessing.
 --
 -- All the decisions live in lib/fleet, which touches no APIs and is tested on
--- its own. What is left here is rednet, drawing, and the clock.
+-- its own. What is left here is messaging, drawing, and the clock.
 
 local config = require("lib.config")
 local specs  = require("lib.specs")
 local fleet  = require("lib.fleet")
 local state  = require("lib.state")
+local net    = require("lib.net")
 
 local store = state.file(config.fleetFile, function(data)
   if type(data.turtles) ~= "table" or type(data.jobs) ~= "table" then
@@ -40,18 +41,10 @@ end
 -- Networking
 --------------------------------------------------------------------------------
 
-local function openModem()
-  for _, side in ipairs(peripheral.getNames()) do
-    if peripheral.getType(side) == "modem" and peripheral.call(side, "isWireless") then
-      rednet.open(side)
-      return side
-    end
-  end
-  return nil
-end
+local function openModem() return net.open() end
 
-local function send(id, msg) rednet.send(id, msg, config.protocol) end
-local function broadcast(msg) rednet.broadcast(msg, config.protocol) end
+local function send(id, msg) net.send(id, msg) end
+local function broadcast(msg) net.broadcast(msg) end
 
 local function persist()
   store.save({ turtles = F.turtles, jobs = F.jobs, nextId = F.nextId })
@@ -62,7 +55,7 @@ end
 --------------------------------------------------------------------------------
 
 --- What the pocket renders. Deliberately a summary rather than the whole
---- roster: a rednet message carrying every turtle's full status table gets
+--- roster: a frame carrying every turtle's full status table gets
 --- large fast, and the pocket only draws a row per turtle anyway.
 local function fleetMessage()
   local t = now()
@@ -187,7 +180,7 @@ end
 
 local function listenerTask()
   while running do
-    local from, msg = rednet.receive(config.protocol, 1)
+    local from, msg = net.receive(1)
     if type(msg) == "table" and type(msg.type) == "string" then
       if msg.type == "status" and msg.id then
         -- A turtle heartbeat. Fold it in and let reconcile work out what it
@@ -208,6 +201,11 @@ local function listenerTask()
         handleCommand(from, msg)
       elseif msg.type == "fleet?" then
         send(from, fleetMessage())
+
+      elseif msg.type == "server?" then
+        -- Another server starting up, checking whether this fleet is taken.
+        -- Answering is what stops it running alongside us.
+        send(from, { type = "server!", id = os.getComputerID() })
       end
     end
   end
@@ -371,31 +369,30 @@ local function main()
     return
   end
 
-  -- Claim the fleet name on the network. rednet.host errors if another computer
-  -- is already hosting it, and that is exactly the check worth having: two
-  -- servers on one fleet would both dispatch, both reconcile, and the turtles
-  -- would act on whichever order happened to arrive last. Nothing would look
-  -- broken until two turtles turned up in the same lane.
+  -- Two servers on one fleet would both dispatch, both reconcile, and the
+  -- turtles would act on whichever order arrived last. Nothing would look
+  -- broken until two of them turned up in the same lane, so this is a hard stop.
   --
-  -- It costs a two second lookup at startup, once. A crashed server leaves no
-  -- stale claim behind, because lookup only hears from computers still running.
-  local hosted, hostErr = pcall(rednet.host, config.protocol, "fleet")
-  if not hosted then
-    term.setTextColour(colours.red)
-    print("Another server is already running on fleet '" .. config.protocol .. "'.")
-    term.setTextColour(colours.white)
-    print("")
-    print("Two servers on one fleet both dispatch to the same")
-    print("turtles. Stop the other one, or install this")
-    print("computer on a different fleet:")
-    print("  install.lua --fleet=<name>")
-    print("")
-    print("(" .. tostring(hostErr) .. ")")
-    return
+  -- rednet.host used to do this check. On a raw channel there is no name
+  -- registry, so ask directly: anyone already serving this fleet answers, and a
+  -- crashed server answers nothing, which is exactly the behaviour wanted.
+  broadcast({ type = "server?" })
+  local until_ = os.clock() + 2
+  while os.clock() < until_ do
+    local from, msg = net.receive(0.25)
+    if type(msg) == "table" and msg.type == "server!" then
+      term.setTextColour(colours.red)
+      print(("Server %d is already running fleet '%s' on channel %d.")
+        :format(from, config.protocol, config.channel))
+      term.setTextColour(colours.white)
+      print("")
+      print("Two servers on one fleet both dispatch to the")
+      print("same turtles. Stop the other one, or put this")
+      print("computer on its own channel:")
+      print("  install.lua --fleet=<name> --channel=<n>")
+      return
+    end
   end
-
-  -- A side effect worth having: any computer can now find this one with
-  -- rednet.lookup(protocol, "fleet").
 
   monitor = peripheral.find("monitor")
   if monitor then

@@ -14,14 +14,12 @@ pocket (remote.lua) --- submit / cancel / command --> server (server.lua)
 
 The server owns the roster and the job queue, so work survives you putting the
 pocket away. Give it an **ender modem**: wireless is about 64 blocks, and a plain
-modem cannot hear a turtle at Y-50. Failing that, a computer running CC's own
-`repeat` program between base and the mine relays rednet in both directions.
+modem cannot hear a turtle at Y-50.
 
-Only one server per fleet. A second one refuses to start rather than compete —
-it claims the fleet name with `rednet.host`, so two servers dispatching to the
-same turtles is caught at startup instead of showing up later as two turtles in
-one lane. Any computer can find the server with
-`rednet.lookup("<fleet>", "fleet")`.
+Only one server per fleet. A second one asks the channel whether anyone is
+already serving it, and stands down if answered — so two servers dispatching to
+the same turtles is caught at startup rather than showing up later as two
+turtles in one lane.
 
 Turtles stay autonomous. If the server is gone, the pocket says `DIRCT` in its
 header and commands turtles itself — a server whose chunk unloaded must never
@@ -37,7 +35,8 @@ mean a turtle you cannot recall.
 | `startup.lua` | all three | autostart; picks the right program for the host |
 | `install.lua` | all | first-time install from GitHub |
 | `update.lua` | all | pull the latest version and reboot |
-| `lib/config.lua` | all | protocol name, junk/fuel filters, timings, margins |
+| `lib/config.lua` | all | channel, fleet name, junk/fuel filters, timings |
+| `lib/net.lua` | all | messaging over a raw modem channel |
 | `lib/specs.lua` | all | pattern names, ranges and estimates (no `turtle` API) |
 | `lib/fleet.lua` | server | roster, queue, assignment, region splitting |
 | `lib/move.lua` | turtle | guarded movement, position tracking, fuel, inventory |
@@ -65,22 +64,32 @@ It asks for a **fleet name**. Computers only talk to others on the same one, so
 running two independent setups in one world is a matter of installing them with
 different names — `north` and `south`, say. Press enter for the default.
 
-There is no port number to set. `rednet.open` always opens the same two channels
-— the computer's own id, and 65535 for broadcasts — and filters by protocol
-string when a message is *received*. So the fleet name is the port in the sense
-that matters: two fleets never act on each other's messages. They do still share
-the airwaves, so a second fleet adds radio traffic and a `repeat` relay carries
-both.
+It also asks for a **modem channel** (1–65535). That is the port, and it is what
+actually keeps two fleets apart: a modem never raises an event for a channel it
+has not opened, so fleets on different channels genuinely do not touch.
 
-The name goes in `/fleet.cfg`, which is deliberately **not** in `manifest.txt` —
-a per-fleet setting stored in a file the updater replaces would survive exactly
+This is why the programs do not use rednet. `rednet.open` always opens the same
+two channels — the computer's own id, and 65535 — and throws away what does not
+match *after* delivery, so every fleet's traffic wakes every computer, and any
+other program in the world using the protocol name `mining` lands in the inbox.
+`lib/net.lua` talks to the modem directly instead, the way
+[cc-mek-scada](https://github.com/MikaylaFischler/cc-mek-scada) does.
+
+The fleet name still rides in every frame, as a second check: the channel does
+the real separating, and the name catches two fleets accidentally configured on
+the same number, which is otherwise a baffling failure where turtles quietly
+take orders from the wrong base.
+
+Both go in `/fleet.cfg`, which is deliberately **not** in `manifest.txt` — a
+per-fleet setting stored in a file the updater replaces would survive exactly
 until the first update, and then quietly reunite two fleets meant to be apart.
 
 `/fleet.cfg` overrides anything in `lib/config.lua`, not just the protocol:
 
 ```lua
 return {
-  protocol   = "mining-north",
+  protocol   = "north",
+  channel    = 4200,
   fuelMargin = 128,
 }
 ```
@@ -89,7 +98,7 @@ For a fork, a branch, or an unattended install:
 
 ```
 install.lua <branch> <owner/repo>
-install.lua --fleet=north          skip the prompt
+install.lua --fleet=north --channel=4200    skip both prompts
 ```
 
 Pass `--fleet=` when scripting: without it the prompt waits for a line of input,

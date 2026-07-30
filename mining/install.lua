@@ -10,23 +10,26 @@
 -- Optional arguments:
 --   install <branch> <owner/repo>
 --   install --fleet=north          name the fleet without being asked
+--   install --channel=4200         set the modem channel without being asked
 --
 -- Pass --fleet= for an unattended install: without it the fleet prompt waits
 -- for a line of input, and read() cannot be given a timeout the way the reboot
 -- prompt at the end can.
 --
--- The fleet name is the rednet protocol every program on this computer will
--- speak, and it is what lets two fleets share a world without hearing each
--- other. It goes in /fleet.cfg, which is deliberately not something `update`
--- replaces.
+-- The fleet name and channel go in /fleet.cfg, which `update` deliberately
+-- does not replace. The channel is the port: a modem never raises an event for
+-- a channel it has not opened, so two fleets on different channels genuinely do
+-- not touch.
 
 local args = { ... }
 
-local FLEET
+local FLEET, CHANNEL
 local positional = {}
 for _, a in ipairs(args) do
-  local named = a:match("^%-%-fleet=(.+)$")
-  if named then FLEET = named
+  local fleetArg = a:match("^%-%-fleet=(.+)$")
+  local chanArg  = a:match("^%-%-channel=(%d+)$")
+  if fleetArg then FLEET = fleetArg
+  elseif chanArg then CHANNEL = tonumber(chanArg)
   elseif a ~= "" then positional[#positional + 1] = a end
 end
 
@@ -39,7 +42,8 @@ local OVERRIDES = "/fleet.cfg"
 -- Mirrors config.protocol's default in lib/config.lua. Naming the default is
 -- what lets this skip writing an overrides file at all for a single-fleet
 -- setup, so there is nothing extra to explain to anyone reading the tree later.
-local DEFAULT_FLEET = "mining"
+local DEFAULT_FLEET   = "mining"
+local DEFAULT_CHANNEL = 3141
 
 --------------------------------------------------------------------------------
 
@@ -155,16 +159,16 @@ say(("Installed %d file(s)."):format(#files), colours.lime)
 --------------------------------------------------------------------------------
 
 --- What /fleet.cfg currently says, if anything.
-local function currentFleet()
-  if not fs.exists(OVERRIDES) then return nil end
+local function currentConfig()
+  if not fs.exists(OVERRIDES) then return {} end
   local fn = loadfile(OVERRIDES)
-  if not fn then return nil end
+  if not fn then return {} end
   local ok, cfg = pcall(fn)
-  if ok and type(cfg) == "table" then return cfg.protocol end
-  return nil
+  if ok and type(cfg) == "table" then return cfg end
+  return {}
 end
 
---- A protocol string goes in rednet messages and on screen in narrow columns.
+--- A fleet name rides in every frame and shows up in narrow columns on screen.
 --- Anything outside this is more likely a typo than an intention.
 local function sanitise(name)
   name = tostring(name):match("^%s*(.-)%s*$")
@@ -172,12 +176,12 @@ local function sanitise(name)
   return name:sub(1, 24)
 end
 
-local existing = currentFleet()
+local existing = currentConfig()
 
 if not FLEET then
   print()
-  if existing then
-    say("This computer is on fleet '" .. existing .. "'.", colours.lightGrey)
+  if existing.protocol then
+    say("This computer is on fleet '" .. existing.protocol .. "'.", colours.lightGrey)
     say("Enter to keep it, or type a new name:", colours.yellow)
   else
     say("Fleet name? Computers only talk to others on the", colours.yellow)
@@ -188,26 +192,44 @@ if not FLEET then
 end
 
 FLEET = sanitise(FLEET or "")
-if FLEET == "" then FLEET = existing or DEFAULT_FLEET end
+if FLEET == "" then FLEET = existing.protocol or DEFAULT_FLEET end
 
--- Only write the file when it says something other than the default, so a
+-- The channel is the port, and the thing that actually separates two fleets:
+-- a modem never raises an event for a channel it has not opened.
+if not CHANNEL then
+  print()
+  local current = existing.channel or DEFAULT_CHANNEL
+  say("Modem channel (1-65535)? This is the port, and", colours.yellow)
+  say("what really keeps two fleets apart.", colours.yellow)
+  say("Enter for " .. current .. ":", colours.yellow)
+  term.setTextColour(colours.white)
+  CHANNEL = tonumber(read())
+end
+
+CHANNEL = math.floor(tonumber(CHANNEL) or 0)
+if CHANNEL < 1 or CHANNEL > 65535 then
+  CHANNEL = existing.channel or DEFAULT_CHANNEL
+end
+
+-- Only write the file when something differs from the defaults, so a plain
 -- single-fleet setup has nothing extra to explain.
-if FLEET ~= DEFAULT_FLEET then
+if FLEET ~= DEFAULT_FLEET or CHANNEL ~= DEFAULT_CHANNEL then
   local f = fs.open(OVERRIDES, "w")
   if f then
     f.write(("-- Written by install.lua. Not in manifest.txt, so `update`\n"
       .. "-- will not replace it. Edit freely; anything here overrides\n"
-      .. "-- the defaults in lib/config.lua.\nreturn {\n  protocol = %q,\n}\n")
-      :format(FLEET))
+      .. "-- the defaults in lib/config.lua.\n"
+      .. "return {\n  protocol = %q,\n  channel  = %d,\n}\n")
+      :format(FLEET, CHANNEL))
     f.close()
   end
-elseif fs.exists(OVERRIDES) and existing and existing ~= DEFAULT_FLEET then
-  -- Explicitly moved back to the default: drop the override rather than
-  -- leaving a file that says one thing while the fleet is on another.
+elseif fs.exists(OVERRIDES) then
+  -- Explicitly back to the defaults: drop the override rather than leave a file
+  -- saying one thing while the fleet is on another.
   fs.delete(OVERRIDES)
 end
 
-say("Fleet: " .. FLEET, colours.cyan)
+say(("Fleet '%s' on channel %d"):format(FLEET, CHANNEL), colours.cyan)
 
 --------------------------------------------------------------------------------
 -- What did we just install onto?

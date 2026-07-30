@@ -15,6 +15,7 @@
 
 local config = require("lib.config")
 local specs  = require("lib.specs")
+local net    = require("lib.net")
 
 local W, H = term.getSize()
 
@@ -37,28 +38,18 @@ local link = {
 -- you are on the one you think you are.
 link.note = ("fleet '%s': looking..."):format(config.protocol)
 
-local function openModem()
-  for _, side in ipairs(peripheral.getNames()) do
-    if peripheral.getType(side) == "modem" and peripheral.call(side, "isWireless") then
-      rednet.open(side)
-      return side
-    end
-  end
-  return nil
-end
+local function openModem() return net.open() end
 
 local function haveServer()
   return link.server ~= nil and (os.clock() - link.seenAt) < config.heartbeatTimeout
 end
 
 local function toServer(msg)
-  if link.server then rednet.send(link.server, msg, config.protocol) end
+  if link.server then net.send(link.server, msg) end
 end
 
 local function toTurtle(id, msg)
-  if id then rednet.send(id, msg, config.protocol) else
-    rednet.broadcast(msg, config.protocol)
-  end
+  if id then net.send(id, msg) else net.broadcast(msg) end
 end
 
 --- One roster shape whichever route is live, so the fleet table is drawn from
@@ -607,15 +598,15 @@ local function main()
     return
   end
 
-  rednet.broadcast({ type = "fleet?" }, config.protocol)
-  rednet.broadcast({ type = "status" }, config.protocol)
+  net.broadcast({ type = "fleet?" })
+  net.broadcast({ type = "status" })
   draw()
 
   local redraw    = os.startTimer(0.4)
   local discovery = os.startTimer(2)
 
   while true do
-    local event, a, b, c = os.pullEvent()
+    local event, a, b, c, d = os.pullEvent()
 
     if event == "timer" and a == redraw then
       redraw = os.startTimer(0.4)
@@ -626,13 +617,14 @@ local function main()
       if not haveServer() then
         if link.server then link.note = "server " .. link.server .. " has gone quiet" end
         -- Ask for both: whichever answers decides which route we are on.
-        rednet.broadcast({ type = "fleet?" }, config.protocol)
-        rednet.broadcast({ type = "status" }, config.protocol)
+        net.broadcast({ type = "fleet?" })
+        net.broadcast({ type = "status" })
       end
 
-    elseif event == "rednet_message" then
-      if c == config.protocol then
-        handleMessage(a, b)
+    elseif event == "modem_message" then
+      local from, msg = net.decode(event, a, b, c, d)
+      if from then
+        handleMessage(from, msg)
         -- Redraw immediately rather than waiting for the timer. A roster that
         -- appears up to half a second late is also a roster whose rows are not
         -- clickable yet, which reads as the screen ignoring taps.

@@ -1340,6 +1340,57 @@ do
 end
 
 --------------------------------------------------------------------------------
+print("net: a channel is a real port, not a filter")
+--------------------------------------------------------------------------------
+do
+  loaded["lib.config"] = nil
+  loaded["lib.net"] = nil
+  local config = require("lib.config")
+  local net = require("lib.net")
+
+  net.channel = config.channel
+  net.id = 7
+
+  local function frameFor(channel, fleet, from, to, body)
+    return net.decode("modem_message", "back", channel,
+      channel, { fleet = fleet, from = from, to = to, body = body })
+  end
+
+  local from, msg = frameFor(config.channel, config.protocol, 9, "*", { type = "status" })
+  check(from == 9 and msg and msg.type == "status", "a broadcast on our channel arrives",
+    tostring(from))
+
+  from = frameFor(config.channel, config.protocol, 9, 7, { type = "pause" })
+  check(from == 9, "and so does one addressed to us")
+
+  from = frameFor(config.channel, config.protocol, 9, 11, { type = "pause" })
+  check(from == nil, "one addressed to another turtle does not")
+
+  -- The whole point of moving off rednet. rednet put every fleet on the same
+  -- two channels and threw away what did not match after delivery; a modem
+  -- never raises the event at all for a channel it has not opened.
+  from = frameFor(config.channel + 1, config.protocol, 9, "*", { type = "status" })
+  check(from == nil, "a frame on another channel is not ours")
+
+  -- Belt and braces for two fleets accidentally sharing a number, which is
+  -- otherwise a baffling failure where turtles take orders from the wrong base.
+  from = frameFor(config.channel, "someone-elses-fleet", 9, "*", { type = "status" })
+  check(from == nil, "nor is one from a different fleet on the same channel")
+
+  -- Broadcasts come back to the sender on a shared channel; rednet never did
+  -- that, and a server folding its own heartbeats into the roster would be
+  -- talking to itself.
+  from = frameFor(config.channel, config.protocol, 7, "*", { type = "status" })
+  check(from == nil, "and our own broadcast does not come back to us")
+
+  check(frameFor(config.channel, config.protocol, 9, "*", "not a table") == nil,
+    "a frame with no message body is ignored")
+  check(net.decode("timer", 1) == nil, "and so is any other event")
+
+  loaded["lib.config"], loaded["lib.net"] = nil, nil
+end
+
+--------------------------------------------------------------------------------
 print("manifest: the installer ships every file and no phantoms")
 --------------------------------------------------------------------------------
 do

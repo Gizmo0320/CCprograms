@@ -48,7 +48,12 @@ peripheral.call = function(side, method, ...)
   return realCall(side, method, ...)
 end
 
-local realSend, realBroadcast, realReceive = rednet.send, rednet.broadcast, rednet.receive
+-- The programs now talk through lib/net (raw modem channels), so that is what
+-- the harness stands in for. Loading it here gives the same module table
+-- server.lua will require, so replacing its functions replaces the transport.
+local net = require("lib.net")
+local realSend, realBroadcast, realReceive = net.send, net.broadcast, net.receive
+local realOpen = net.open
 
 --- Run server.lua against a scripted conversation.
 --
@@ -57,13 +62,38 @@ local realSend, realBroadcast, realReceive = rednet.send, rednet.broadcast, redn
 -- believe it received, and when the script runs out we stop the program by
 -- making every loop's `running` check fail -- which is what returning from
 -- listenerTask does, since it is inside parallel.waitForAny.
-local function runServer(script)
+--- Run server.lua against a scripted conversation.
+--
+-- `probeAnswer` is an existing server replying to the startup check. Without
+-- one the probe is left to time out, which is what a lone server sees.
+--
+-- The probe window has to be modelled rather than ignored. The server spends
+-- its first two seconds asking "is anyone already serving this fleet?", calling
+-- receive in a loop; a stub that answered instantly from the script would feed
+-- the whole conversation to the probe and leave the listener with nothing.
+local function runServer(script, probeAnswer)
   local sent, broadcasts = {}, {}
   local step = 0
+  local probeUntil = os.clock() + 2.05
 
-  rednet.send = function(id, msg) sent[#sent + 1] = { to = id, msg = msg } return true end
-  rednet.broadcast = function(msg) broadcasts[#broadcasts + 1] = msg return true end
-  rednet.receive = function()
+  net.open = function()
+    net.channel = config.channel
+    net.id = os.getComputerID()
+    return "back"
+  end
+  net.send = function(id, msg) sent[#sent + 1] = { to = id, msg = msg } return true end
+  net.broadcast = function(msg) broadcasts[#broadcasts + 1] = msg return true end
+  net.receive = function(timeout)
+    if os.clock() < probeUntil then
+      if probeAnswer then
+        local answer = probeAnswer
+        probeAnswer = nil
+        return answer.from, answer.msg
+      end
+      os.sleep(timeout or 0.25)         -- real sleep: let the probe time out
+      return nil
+    end
+
     step = step + 1
     local entry = script[step]
     if not entry then
@@ -76,7 +106,8 @@ local function runServer(script)
 
   fs.delete(config.fleetFile)
   local ok, err = pcall(dofile, "/server.lua")
-  rednet.send, rednet.broadcast, rednet.receive = realSend, realBroadcast, realReceive
+  net.send, net.broadcast, net.receive, net.open =
+    realSend, realBroadcast, realReceive, realOpen
 
   if not ok and not tostring(err):find("__done__") then
     return sent, broadcasts, tostring(err)
@@ -113,19 +144,20 @@ do
   -- rednet.host errors when a hostname is taken. Two servers on one fleet would
   -- both dispatch to the same turtles and nothing would look broken until two
   -- of them turned up in the same lane, so this has to be a hard stop.
-  local realHost = rednet.host
-  rednet.host = function() error("Hostname in use", 2) end
-
+  -- Startup broadcasts "server?" and waits. An existing server answers
+  -- "server!", and that answer is what makes this one stand down.
   local sent, _, err = runServer({
     { from = 7, msg = statusOf(7, "idle") },
     { from = 99, msg = { type = "submit", pattern = "quarry",
         params = { w = 8, d = 8, h = 4 }, anchor = { x = 0, y = 64, z = 0 },
         lanes = 1 } },
-  })
-  rednet.host = realHost
+  }, { from = 42, msg = { type = "server!", id = 42 } })
 
   check(err == nil, "it exits cleanly rather than crashing", err)
-  check(#sent == 0, "and does nothing at all -- no dispatch, no acks", #sent)
+  check(countOf(sent, function(s2) return s2.msg.type == "start" end) == 0,
+    "and dispatches nothing", #sent)
+  check(find(sent, function(s2) return s2.msg.type == "ack" end) == nil,
+    "and acks nothing -- it never got as far as listening")
 end
 
 --------------------------------------------------------------------------------

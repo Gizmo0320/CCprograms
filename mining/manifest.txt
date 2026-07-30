@@ -16,6 +16,7 @@ server.lua
 remote.lua
 
 lib/config.lua
+lib/net.lua
 lib/specs.lua
 lib/fleet.lua
 lib/state.lua
