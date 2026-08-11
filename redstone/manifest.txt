@@ -1,0 +1,28 @@
+# Files install.lua downloads, one path per line, relative to redstone/.
+#
+# The whole tree goes on every computer -- startup.lua works out what it is
+# running on -- so there is one thing to install and no way to end up with the
+# wrong half on the wrong machine.
+#
+# /ports.cfg, /rules.cfg and /redstone.cfg are deliberately absent. `update`
+# replaces every file listed here, and wiring that survived exactly until the
+# first update would be worse than no wiring at all.
+#
+# test/spec.lua checks this list against what is actually in the repo, so
+# adding a file and forgetting this line is a test failure rather than an
+# installer that silently ships an incomplete tree.
+
+startup.lua
+update.lua
+node.lua
+server.lua
+remote.lua
+
+lib/config.lua
+lib/net.lua
+lib/ports.lua
+lib/state.lua
+lib/rules.lua
+lib/logic.lua
+lib/scenes.lua
+lib/log.lua

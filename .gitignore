@@ -3,6 +3,9 @@ test-results.txt
 test-fleet-results.txt
 test-server-results.txt
 test-remote-results.txt
+test-node-results.txt
+test-install-results.txt
+test-summary.txt
 test-error.txt
 *.state
 *.part
