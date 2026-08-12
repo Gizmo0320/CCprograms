@@ -110,6 +110,19 @@ local KINDS = {
     fields = { "signal" },
     loose  = true,        -- may resolve to the computer's own bus, see define
   },
+
+  -- A bidirectional gearbox, driven one face at a time. `setFaceAngle` is a
+  -- servo position in degrees, the same shape as a bearing's pivot, so a mix
+  -- term aims it exactly the way it aims one of those.
+  --
+  -- The block's *mode* is deliberately not touched. auto, passthrough, servo and
+  -- the rest change what the gearbox is for, that is a decision its builder made
+  -- when they placed it, and a program that quietly flipped it to servo on boot
+  -- would break a contraption that was working.
+  gearbox = {
+    types  = { bidirectional_gearbox = true },
+    fields = { "angle" },
+  },
 }
 
 -- The set form, built once, for the mix validation and for `apply`'s lookup.
@@ -135,6 +148,11 @@ local SIDES = { top = true, bottom = true, left = true,
                 right = true, front = true, back = true }
 
 local MODES = { digital = true, analog = true, bundled = true }
+
+-- A gearbox names its faces by compass point rather than by the computer's own
+-- sides, because it is a block on a contraption rather than something bolted to
+-- the machine running this.
+local GEAR_FACES = { north = true, south = true, east = true, west = true }
 
 -- Forward declaration. `emitFace` lives down with the other writing code, where
 -- it belongs, but `release` needs it and comes first -- a wire is the one control
@@ -390,7 +408,10 @@ function hull.define(craft)
         has     = spec.has,
         pivot   = c.pivot,            -- { min, max } in degrees, clamped on write
         input   = c.input,            -- a controller channel id, for kind = "input"
-        face    = c.side,             -- which of the six, for kind = "wire"
+        -- One field, two meanings, and they never overlap: a `wire` names one
+        -- of the computer's six sides with `side`, a `gearbox` names a compass
+        -- face with `face`. Each is validated against its own set below.
+        face    = (c.kind == "gearbox") and c.face or c.side,
         mode    = c.mode or "digital",
         colour  = c.colour or c.color,
         invert  = c.invert and true or false,
@@ -403,6 +424,13 @@ function hull.define(craft)
       -- Wiring is checked here rather than at write time, because a signal sent
       -- to a side that does not exist is silently nothing at all -- the burner
       -- simply never lights, and there is no error anywhere to explain it.
+      if c.kind == "gearbox" and not why then
+        if not GEAR_FACES[control.face] then
+          why = name .. ": '" .. tostring(control.face)
+            .. "' is not a gearbox face (north south east west)"
+        end
+      end
+
       if c.kind == "wire" and not why then
         if not SIDES[control.face] then
           why = name .. ": '" .. tostring(control.face) .. "' is not a side"
@@ -763,6 +791,12 @@ function hull.release()
     elseif c.kind == "input" then
       if c.input then call(name, c.side, "resetInput", c.input) end
 
+    elseif c.kind == "gearbox" then
+      -- Back to whatever the block does on its own. clearFaceAngle drops the
+      -- override without changing the mode, which is the gearbox equivalent of
+      -- handing a bearing back to redstone.
+      call(name, c.side, "clearFaceAngle", c.face)
+
     elseif c.kind == "grip" then
       -- Deliberately not released. A claw that let go of its cargo every time
       -- the program stopped would drop a chest of ore into the sea on a reboot,
@@ -847,13 +881,14 @@ end
 -- guard, which is deciding whether to fly home in ten minutes. Reading them five
 -- times a second alongside everything else would be the most expensive thing the
 -- sweep does, for no gain at all.
-local function readFuel(raw, now)
+local function readSlow(raw, now)
   if (now - hull.fuelAt) < config.heartbeat then
     raw.fuel     = hull.fuel.fuel
     raw.capacity = hull.fuel.capacity
     raw.burn     = hull.fuel.burn
     raw.thrust   = hull.fuel.thrust
     raw.lift     = hull.fuel.lift
+    raw.pressure = hull.fuel.pressure
     return
   end
   hull.fuelAt = now
@@ -906,11 +941,21 @@ local function readFuel(raw, now)
     end
   end
 
+  -- Ambient pressure belongs on this clock rather than the sweep's. It changes
+  -- with altitude and nothing else, it is a whole peripheral call, and it was
+  -- being read five times a second and used by nothing at all.
+  local pressure = nil
+  local alt = hull.instruments.alt
+  if alt then
+    pressure = tonumber((call("alt", alt.side, "getAirPressure")))
+  end
+
   hull.fuel = { fuel = fuel, capacity = capacity, burn = burn,
-                thrust = thrust, lift = lift }
+                thrust = thrust, lift = lift, pressure = pressure }
 
   raw.fuel, raw.capacity = fuel, capacity
   raw.burn, raw.thrust, raw.lift = burn, thrust, lift
+  raw.pressure = pressure
 end
 
 --- Everything the instruments say, in one table, once per sweep.
@@ -940,7 +985,6 @@ function hull.read(now)
     else
       raw.alt = tonumber((call("alt", inst.alt.side, "getHeight")))
     end
-    raw.pressure = tonumber((call("alt", inst.alt.side, "getAirPressure")))
   end
 
   if inst.vel then
@@ -1006,6 +1050,13 @@ function hull.read(now)
       raw.ahead = tonumber((call("forward", inst.forward.side, "getDistance")))
       raw.aheadBlock = call("forward", inst.forward.side, "getBlock")
     end
+  end
+
+  -- The data link, which publishes where the ship is going so gyro-guided parts
+  -- of the contraption can point at it. Read here; written by hull.setTarget
+  -- when the leg changes, which is the only time it can have changed.
+  if inst.link then
+    raw.linked = call("link", inst.link.side, "isLinked") == true
   end
 
   if inst.dock then
@@ -1093,7 +1144,7 @@ function hull.read(now)
     hull.signals = raw.signals
   end
 
-  readFuel(raw, now)
+  readSlow(raw, now)
 
   raw.faults = {}
   for key, why in pairs(hull.faults) do
@@ -1220,7 +1271,7 @@ function hull.apply(demands, dt)
           if field == "throttle" or field == "left" or field == "right"
              or field == "brake" or field == "input" or field == "signal" then
             value = clamp(tonumber(value) or 0, 0, 1)
-          elseif field == "pivot" then
+          elseif field == "pivot" or field == "angle" then
             local lo = (c.pivot and tonumber(c.pivot.min)) or -90
             local hi = (c.pivot and tonumber(c.pivot.max)) or  90
             value = clamp(tonumber(value) or 0, lo, hi)
@@ -1315,11 +1366,45 @@ function hull.apply(demands, dt)
 
       elseif c.kind == "wire" then
         emitFace(c)
+
+      elseif c.kind == "gearbox" then
+        if have2.angle ~= nil then
+          call(name, c.side, "setFaceAngle", c.face, have2.angle)
+        end
       end
     end
   end
 
   return applied
+end
+
+--------------------------------------------------------------------------------
+-- The data link
+--------------------------------------------------------------------------------
+
+--- Tell the hull where it is going.
+--
+-- An advanced data link broadcasts a target position to whatever on the
+-- contraption is listening -- gyros, guided bearings, anything the builder wired
+-- to it. Publishing the current leg means those parts aim at the same place the
+-- autopilot is flying to, instead of at whatever was last set by hand.
+--
+-- Nothing here depends on it: a hull without the block is the common case and
+-- this is a no-op. Returns true when it actually went somewhere.
+function hull.setTarget(x, y, z)
+  local link = hull.instruments.link
+  if not link then return false end
+
+  local _, failed = call("link", link.side, "setTarget", x, y, z)
+  return not failed
+end
+
+function hull.clearTarget()
+  local link = hull.instruments.link
+  if not link then return false end
+
+  local _, failed = call("link", link.side, "clearTarget")
+  return not failed
 end
 
 --------------------------------------------------------------------------------

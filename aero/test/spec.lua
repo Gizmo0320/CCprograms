@@ -1618,6 +1618,172 @@ do
 end
 
 --------------------------------------------------------------------------------
+section("hull: the other control kinds")
+--------------------------------------------------------------------------------
+
+-- wheels, input, grip and gearbox were written and never exercised: no test
+-- defined one, so the ground-vehicle mix in the README was documentation for
+-- code nobody had run. This is that gap closed.
+do
+  local mock = require("test.mockperipheral")
+  local hull = require("lib.hull")
+
+  local w = mock.new{}
+  w.navTable("nav0")
+  w.altimeter("alt0")
+  w.wheels("wheel0")
+  w.controller("ctrl0", { ids = { "throttle", "brake" } })
+  w.claw("claw0")
+  w.gearbox("gear0")
+  w.dataLink("link0")
+  _G.peripheral = w.api
+
+  local ok, problems = hull.define({
+    name = "Rover",
+    controls = {
+      wheels = { kind = "wheels", peripheral = "wheel0" },
+      lever  = { kind = "input", peripheral = "ctrl0", input = "throttle" },
+      grab   = { kind = "grip", peripheral = "claw0" },
+      vane   = { kind = "gearbox", peripheral = "gear0", face = "north",
+                 pivot = { min = -45, max = 45 } },
+    },
+    instruments = { nav = "nav0", alt = "alt0", vel = false, gimbal = false,
+                    ground = false, dock = false, stick = false },
+    mix = {
+      { demand = "forward", control = "wheels", as = "left" },
+      { demand = "forward", control = "wheels", as = "right" },
+      { demand = "forward", control = "lever",  as = "input" },
+      { demand = "yaw",     control = "vane",   as = "angle", scale = 45 },
+    },
+  })
+  check(ok, "a hull of wheels, inputs, a claw and a gearbox loads clean",
+        problems and problems[1])
+
+  -- Wheels take three values in one call, because writing left without right
+  -- would brake a wheel that was meant to be turning.
+  hull.apply({ wheels = { left = 0.6, right = 0.6, brake = 0 } }, 10)
+  local wheel = w.device("wheel0")
+  check(wheel.left == 0.6 and wheel.right == 0.6,
+        "a wheel mount is driven", tostring(wheel.left) .. "," .. tostring(wheel.right))
+  check(wheel.writes.setControls == 1, "in one call, not three",
+        wheel.writes.setControls)
+
+  hull.apply({ wheels = { left = 2, right = -1, brake = 0.5 } }, 10)
+  check(wheel.left == 1 and wheel.right == 0, "and clamped to 0..1",
+        tostring(wheel.left) .. "," .. tostring(wheel.right))
+
+  -- A controller channel, which is the escape hatch for anything with no
+  -- peripheral of its own.
+  hull.apply({ lever = { input = 0.75 } }, 10)
+  local ctrl = w.device("ctrl0")
+  check(near(ctrl.inputs.throttle, 0.75), "a controller channel is driven",
+        ctrl.inputs.throttle)
+  check(ctrl.last.setInput[1] == "throttle",
+        "on the channel the craft file named", ctrl.last.setInput[1])
+
+  -- A grip is a command, not a position: asking twice does it twice.
+  local claw = w.device("claw0")
+  hull.apply({ grab = { grip = "close" } }, 10)
+  check(claw.holding == true, "a claw closes")
+  hull.apply({ grab = { grip = "close" } }, 10)
+  check(claw.writes.close == 2,
+        "and closing twice closes twice, because it is a command and not a value",
+        claw.writes.close)
+  hull.apply({ grab = { grip = "open" } }, 10)
+  check(claw.holding == false, "and opens")
+
+  -- The gearbox: a servo angle on one compass face, clamped like a pivot.
+  hull.apply({ vane = { angle = 30 } }, 10)
+  local gear = w.device("gear0")
+  check(gear.angles.north == 30, "a gearbox face is aimed", gear.angles.north)
+  check(gear.last.setFaceAngle[1] == "north", "on the face that was named",
+        gear.last.setFaceAngle[1])
+
+  hull.apply({ vane = { angle = 90 } }, 10)
+  check(gear.angles.north == 45, "and clamped to the craft's limits",
+        gear.angles.north)
+
+  -- The mix drives all of it, which is the point of having a mix.
+  local autopilot = require("lib.autopilot")
+  local outs = autopilot.apply(hull.mix, { forward = 0.5, yaw = -1 })
+  check(near(outs.wheels.left, 0.5) and near(outs.wheels.right, 0.5),
+        "one demand can drive both wheels")
+  check(near(outs.lever.input, 0.5), "and a controller channel at the same time")
+  check(near(outs.vane.angle, -45), "and a gearbox face", outs.vane.angle)
+
+  -- Release. Wheels and controller channels go back to nothing; a claw
+  -- deliberately does not let go, because dropping a chest of ore into the sea
+  -- on a reboot is worse than a claw that stayed shut.
+  hull.apply({ grab = { grip = "close" } }, 10)
+  hull.release()
+
+  check(wheel.writes.clearControls == 1, "release clears the wheels")
+  check(ctrl.inputs.throttle == 0, "and resets the controller channel",
+        ctrl.inputs.throttle)
+  check(gear.writes.clearFaceAngle == 1, "and drops the gearbox override")
+  check(claw.holding == true, "but the claw keeps hold of its cargo")
+
+  -- A gearbox face that is not a compass point is caught at load. It is the
+  -- same trap as a wire on a side that does not exist: the call silently does
+  -- nothing and the vane never moves.
+  local badOk, badWhy = hull.define({
+    controls = { vane = { kind = "gearbox", peripheral = "gear0", face = "top" } },
+    instruments = { nav = "nav0", alt = "alt0" }, mix = {},
+  })
+  check(not badOk and tostring(badWhy[1]):find("face", 1, true),
+        "a gearbox face that is not a compass point is refused", badWhy and badWhy[1])
+
+  _G.peripheral = realPeripheral
+end
+
+--------------------------------------------------------------------------------
+section("hull: the data link")
+--------------------------------------------------------------------------------
+
+-- The `link` role was declared and read by nothing at all. It now publishes
+-- where the ship is going, so gyros and guided bearings on the contraption aim
+-- at the same place the autopilot is flying to.
+do
+  local mock = require("test.mockperipheral")
+  local hull = require("lib.hull")
+
+  local w = mock.new{}
+  w.navTable("nav0")
+  w.altimeter("alt0")
+  w.dataLink("link0")
+  _G.peripheral = w.api
+
+  hull.define({ controls = {}, mix = {},
+                instruments = { nav = "nav0", alt = "alt0", vel = false,
+                                gimbal = false, ground = false, dock = false,
+                                stick = false } })
+  check(hull.instruments.link ~= nil, "a data link is found by type")
+
+  local raw = hull.read(1)
+  check(raw.linked == true, "and whether it is linked is read")
+
+  check(hull.setTarget(10, 70, 300), "a target can be published")
+  local link = w.device("link0")
+  check(link.target and link.target.x == 10 and link.target.z == 300,
+        "and reaches the block", link.target and link.target.x)
+
+  check(hull.clearTarget(), "and cleared")
+  check(link.target == nil, "which reaches it too")
+
+  -- Most hulls have none, and that must be a no-op rather than a fault.
+  local w2 = mock.new{}
+  w2.navTable("nav0")
+  w2.altimeter("alt0")
+  _G.peripheral = w2.api
+  hull.define({ controls = {}, mix = {},
+                instruments = { nav = "nav0", alt = "alt0" } })
+  check(hull.setTarget(1, 2, 3) == false, "a hull with no link refuses politely")
+  check(next(hull.faults) == nil, "without recording a fault", next(hull.faults))
+
+  _G.peripheral = realPeripheral
+end
+
+--------------------------------------------------------------------------------
 section("hull: redstone")
 --------------------------------------------------------------------------------
 

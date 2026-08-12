@@ -450,6 +450,89 @@ do
 end
 
 --------------------------------------------------------------------------------
+section("something that drives")
+--------------------------------------------------------------------------------
+
+-- The README has said since the first commit that a jet, a balloon and a truck
+-- share one autopilot, because the mix maps the same four demands onto whatever
+-- the hull has. Two of those three had been flown. This is the third.
+--
+-- The ship still holds altitude on a bearing -- a wheeled contraption in
+-- Aeronautics is still a physics object that can leave the ground -- but forward
+-- comes from a wheel mount rather than a thruster, which is the part that had
+-- never run.
+do
+  local ROVER = {
+    name = "Badger",
+    controls = {
+      lift   = { kind = "bearing", peripheral = "lift0", group = "all" },
+      wheels = { kind = "wheels", peripheral = "wheel0" },
+      main   = { kind = "bearing", peripheral = "main0", group = "all",
+                 pivot = { min = -30, max = 30 } },
+    },
+    instruments = { nav = "nav0", alt = "alt0", vel = "vel0", ground = "opt0",
+                    dock = false, gimbal = false, stick = false, link = false },
+    limits = { cruise = 6, climb = 3, descend = 2, clearance = 4 },
+    mix = {
+      { demand = "lift",    control = "lift",   as = "throttle" },
+      -- Forward on both wheels, and yaw still on the vectoring bearing: the
+      -- model does not pretend to steer by driving one side faster.
+      { demand = "forward", control = "wheels", as = "left" },
+      { demand = "forward", control = "wheels", as = "right" },
+      { demand = "yaw",     control = "main",   as = "pivot", scale = 30 },
+    },
+  }
+
+  local world = mock.new{
+    lift = "lift0", main = "main0", drive = "wheel0",
+    x = 0, y = 64, z = 0, heading = 0,
+  }
+  world.bearing("lift0", { count = 4, fuel = 100000, capacity = 100000, burn = 3000 })
+  world.bearing("main0", { count = 1, fuel = 100000, capacity = 100000, burn = 3000 })
+  world.wheels("wheel0")
+  world.navTable("nav0")
+  world.altimeter("alt0")
+  world.velocimeter("vel0")
+  world.optical("opt0", { range = 40 })
+  _G.peripheral = world.api
+
+  hull.define(ROVER)
+  hull.claim()
+
+  local r = { world = world, fix = instruments.blank(),
+              ap = autopilot.new(hull.gains), fl = flight.new(), t = 0, log = {} }
+
+  local waypoints = {}
+  nav.put(waypoints, { name = "shed", x = 0, y = 64, z = 260 })
+  local ctx = { waypoints = waypoints, limits = ROVER.limits }
+
+  r.fl.state = "cruise"
+  r.fl.alt = 70
+  r.fl.plan = nav.plan(waypoints, { "shed" }, 70)
+
+  -- Sampled while it is under way rather than at the end. Two hundred and sixty
+  -- blocks at six a second is forty seconds, so a rover checked after two
+  -- minutes has arrived, stopped, and put the wheels back to nothing -- which
+  -- looks exactly like wheels that never worked.
+  run(r, 20, ctx)
+
+  check(world.device("wheel0").left > 0,
+        "the wheels are being driven", world.device("wheel0").left)
+  check(world.ship.z > 20, "and the thing actually moves", world.ship.z)
+  check(math.abs(world.ship.y - 70) < 5,
+        "while still holding altitude on the bearing", world.ship.y)
+
+  -- Arrive, and the wheels come off the power rather than driving into the shed.
+  run(r, 220, ctx)
+  check(nav.distance(r.fix, waypoints.shed) < config.arriveRadius * 4,
+        "it gets there", nav.distance(r.fix, waypoints.shed))
+  check(r.fl.state == "loiter", "and stops", r.fl.state)
+
+  hull.release()
+  check(world.device("wheel0").left == 0, "release stops the wheels")
+end
+
+--------------------------------------------------------------------------------
 section("the obstacle guard")
 --------------------------------------------------------------------------------
 

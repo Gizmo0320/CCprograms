@@ -99,7 +99,7 @@ been.
 | `thruster_bearing` | `setBearingControlMode("computer")`, `setThrottle(idOrAll, 0..1)`, `setPivotAngle(deg)`, `getFuel/getBurnTimeSeconds/getTotalRealThrust`, `clearThrottleOverride(idOrAll)` |
 | `thruster` | one at a time: `setThrottle`, `setEnabled`, `setControlMode`, `clearThrottleOverride` |
 | `virtual_orientation_source` | `setAnglesDegrees(x, z)`, `clear()` |
-| `bidirectional_gearbox` | `setMode`, `setFaceAngle(face, angle)` |
+| `bidirectional_gearbox` | `setFaceAngle(face, angle)`, `clearFaceAngle(face)` — the `gearbox` kind. `setMode` is deliberately not called: it changes what the block is for, and its builder already decided that |
 | `wheel_mount` | `setControls(left, right, brake)`, `clearControls()` |
 | `claw` / `rope_winch_cable` | `open()`, `close()`, `release()`, `isHolding()` |
 | `analogue_contraption_controller` | `setInput(id, 0..1)`, `listInputIds()` — the escape hatch for anything without a dedicated peripheral |
@@ -150,7 +150,10 @@ while `"main"` is `thruster_bearing_0` with a thirty-degree pivot limit.
 ```
 
 - `kind` is `bearing` | `thruster` | `orientation` | `wheels` | `input` | `grip` |
-  `wire`, and decides which methods are called.
+  `gearbox` | `wire`, and decides which methods are called. `control.face` means
+  one of the computer's six sides for a `wire` and a compass point for a
+  `gearbox`; each is validated against its own set, and neither silently accepts
+  the other's -- a face that does not exist is a call that does nothing at all.
 - An instrument may be named, left out to be found automatically, or set to
   `false` — which means "this hull has none, stop looking and stop warning".
   A balloon with no optical sensor is a design, not a fault, and a warning that

@@ -182,7 +182,21 @@ boot.
 | `wheels` | `wheel_mount` | `left`, `right`, `brake`, all 0–1 |
 | `input` | `analogue_contraption_controller` | `input` 0–1, on the channel named by `input = <id>` |
 | `grip` | `claw`, `rope_winch_cable` | `grip` = `open` / `close` / `release` |
+| `gearbox` | `bidirectional_gearbox` | `angle` degrees, on the compass `face` you name |
 | `wire` | this computer's sides, or a `redstone_relay` | `signal` 0–1 |
+
+A `gearbox` names its face by compass point rather than by one of the computer's
+sides, because it is a block on the contraption:
+
+```lua
+vane = { kind = "gearbox", peripheral = "bidirectional_gearbox_0",
+         face = "north", pivot = { min = -45, max = 45 } },
+```
+
+Its **mode** is deliberately left alone. `auto`, `passthrough`, `servo` and the
+rest change what the gearbox is *for*; that is a decision its builder made when
+they placed it, and a program that quietly flipped it to servo on boot would
+break a contraption that was working.
 
 ## Redstone
 
@@ -302,7 +316,7 @@ to say "this hull has none, stop looking and stop warning".
 | `forward` | `optical_sensor` | what is ahead. No sensor means no obstacle guard |
 | `dock` | `docking_connector` | what the ship is docked to |
 | `stick` | `analogue_joystick` | the pilot's hands |
-| `link` | `advanced_data_link` | a live target position |
+| `link` | `advanced_data_link` | publishes where the ship is going |
 | `beacon` | `directional_link` | bearing to the nearest matching link |
 | `range` | `modulating_link` | distance to the nearest matching link |
 | `plate` | `name_plate` | the ship's name, on a block you can read from outside |
@@ -311,6 +325,12 @@ to say "this hull has none, stop looking and stop warning".
 Renaming a ship from the pocket computer writes the **nameplate** as well as the
 computer's label, so the name is visible from the ground rather than only on the
 dashboard.
+
+If the hull has an **advanced data link**, the pilot publishes the current leg's
+position to it whenever the leg changes — so gyros and guided bearings wired to
+that link aim at the same place the autopilot is flying to, rather than at
+whatever was last set by hand. A hull without one is the common case and nothing
+depends on it.
 
 The two **linked receivers** together are a homing beacon: bearing and range to
 the nearest matching link. They are reported in the telemetry and nothing steers
@@ -698,7 +718,7 @@ Results are written to `/test-summary.txt` and `/test-*-results.txt` on the
 emulated computer rather than stdout, because headless mode redraws the entire
 terminal on every update.
 
-753 assertions. `spec.lua` covers each module on its own — the heading
+787 assertions. `spec.lua` covers each module on its own — the heading
 arithmetic and the wrap, plans and legs, sensor fusion and the ageing of a
 dead-reckoned fix, the PID loops and the integral clamp, every flight state and
 all four guards, the hull abstraction over a mock of the real peripheral API, the

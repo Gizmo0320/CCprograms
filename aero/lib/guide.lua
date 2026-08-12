@@ -172,6 +172,10 @@ input
   analogue controller
 grip
   a claw or rope winch
+gearbox
+  one face of a
+  bidirectional gearbox,
+  aimed in degrees
 wire
   plain redstone
 

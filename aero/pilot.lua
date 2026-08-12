@@ -52,6 +52,7 @@ local pilot = {
   stop      = false,
   events    = {},        -- to be sent, oldest first
   gpsAt     = -math.huge,
+  target    = nil,       -- what the data link was last told, to avoid rewriting it
   gps       = nil,
   lastState = nil,
 }
@@ -240,6 +241,8 @@ local function telemetry()
     beaconRange = fix.beaconRange,
     tilt   = fix.tilt,
     spin   = fix.spin,
+    pressure = fix.pressure,
+    linked = fix.linked,
     ahead  = fix.ahead,
     mass   = fix.mass,
     assembled = fix.assembled,
@@ -353,6 +356,21 @@ local function sweep(t, dt)
   }
 
   local _, goal, events = flight.step(pilot.fl, pilot.fix, ctx, t)
+
+  -- Publish where we are going to the data link, so gyros and guided bearings
+  -- on the contraption aim at the same place the autopilot is flying to rather
+  -- than at whatever was last set by hand. Only on a change: it is a peripheral
+  -- call and the destination changes once a leg, not five times a second.
+  local leg = nav.current(pilot.fl.plan)
+  local target = leg and (leg.name .. ":" .. tostring(leg.x) .. "," .. tostring(leg.z))
+  if target ~= pilot.target then
+    pilot.target = target
+    if leg then
+      hull.setTarget(leg.x, leg.y or (pilot.fl.alt or 0), leg.z)
+    else
+      hull.clearTarget()
+    end
+  end
 
   for _, e in ipairs(events) do
     event(e)

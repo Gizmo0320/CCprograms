@@ -68,6 +68,11 @@ function mock.new(opts)
   world.main = opts.main or nil
   world.trim = opts.trim or nil
 
+  -- Which wheel mount drives the model, for something that drives rather than
+  -- flies. Named `drive` rather than `wheels` because `world.wheels` is already
+  -- the constructor that attaches one.
+  world.drive = opts.drive or nil
+
   -- The ship ------------------------------------------------------------------
 
   world.ship = {
@@ -731,6 +736,82 @@ function mock.new(opts)
     return d
   end
 
+  --- A claw, which holds cargo and is deliberately never released on exit.
+  function world.claw(side)
+    local d = world.add(side, "claw", { signal = 0, holding = false })
+    d.methods = {
+      open = function() record(d, "open") d.holding = false end,
+      close = function() record(d, "close") d.holding = true end,
+      release = function() record(d, "release") d.holding = false end,
+      setSignal = function(v) record(d, "setSignal", v) d.signal = tonumber(v) or 0 end,
+      clearSignalOverride = function() record(d, "clearSignalOverride") end,
+      getSignal = function() return d.signal end,
+      isHolding = function() return d.holding end,
+      getStatus = function() return { holding = d.holding, signal = d.signal } end,
+    }
+    return d
+  end
+
+  --- The analogue contraption controller: named input channels a program drives
+  --- in place of a player pressing a key.
+  function world.controller(side, opts2)
+    opts2 = opts2 or {}
+    local d = world.add(side, "analogue_contraption_controller",
+                        { inputs = {}, ids = opts2.ids or { "throttle", "brake" } })
+    for _, id in ipairs(d.ids) do d.inputs[id] = 0 end
+
+    d.methods = {
+      listInputIds = function() return d.ids end,
+      setInput = function(id, v)
+        record(d, "setInput", id, v)
+        d.inputs[id] = tonumber(v) or 0
+      end,
+      getInputValue = function(id) return d.inputs[id] end,
+      resetInput = function(id) record(d, "resetInput", id) d.inputs[id] = 0 end,
+      resetAll = function() record(d, "resetAll") for k in pairs(d.inputs) do d.inputs[k] = 0 end end,
+    }
+    return d
+  end
+
+  --- A bidirectional gearbox, one servo angle per compass face.
+  function world.gearbox(side)
+    local d = world.add(side, "bidirectional_gearbox",
+                        { angles = {}, mode = "auto" })
+    d.methods = {
+      setFaceAngle = function(face, angle)
+        record(d, "setFaceAngle", face, angle)
+        d.angles[face] = tonumber(angle) or 0
+      end,
+      getFaceAngle = function(face) return d.angles[face] end,
+      clearFaceAngle = function(face)
+        record(d, "clearFaceAngle", face)
+        d.angles[face] = nil
+      end,
+      getMode = function() return d.mode end,
+      setMode = function(m) record(d, "setMode", m) d.mode = m end,
+      getStatus = function() return { mode = d.mode } end,
+    }
+    return d
+  end
+
+  --- An advanced data link: where the ship has been told to point.
+  function world.dataLink(side)
+    local d = world.add(side, "advanced_data_link",
+                        { target = nil, linked = true, mode = "live" })
+    d.methods = {
+      isLinked = function() return d.linked end,
+      getTarget = function() return d.target end,
+      setTarget = function(x, y, z)
+        record(d, "setTarget", x, y, z)
+        d.target = { x = x, y = y, z = z }
+      end,
+      clearTarget = function() record(d, "clearTarget") d.target = nil end,
+      getMode = function() return d.mode end,
+      setMode = function(m) d.mode = m end,
+    }
+    return d
+  end
+
   --- A wireless modem, so net.open finds something. Messages go into `sent`
   --- rather than anywhere, which is what the program suites read the wire from.
   function world.modem(side)
@@ -851,6 +932,20 @@ function mock.new(opts)
     -- Horizontal. A hull with no main bearing named still turns and still
     -- holds altitude; it simply never goes anywhere, which is a balloon.
     local push = world.main and throttleOf(world.main) * world.thrustGain or 0
+
+    -- ...or wheels, for something that drives rather than flies. Averaged
+    -- because a wheel mount takes a left and a right and both push forward;
+    -- steering by driving them at different rates is a thing the model does not
+    -- pretend to do.
+    if world.drive then
+      local d = world.devices[world.drive]
+      if d then
+        push = push + ((d.left or 0) + (d.right or 0)) / 2 * world.thrustGain
+        if (d.brake or 0) > 0 then
+          s.speed = s.speed * (1 - math.min(1, d.brake))
+        end
+      end
+    end
     s.speed = s.speed + push * dt
     s.speed = s.speed - s.speed * world.dragH * dt
 
