@@ -276,16 +276,26 @@ do
     { id = SHIP2, label = "Merlin",  flight = { state = "cruise" } },
   }
 
+  -- Probed twice, and the second probe is the point: picking a ship adds its
+  -- own panel to the list, so every action row below moves down by one. Reading
+  -- a row position off the unselected layout and clicking it on the selected one
+  -- lands on the wrong button -- which is what happened here, and is exactly why
+  -- rows carry their own handler rather than being matched on coordinates.
   local probe = runRemote{ script = { towerNet(ships), snap() } }
   local shipRow = rowOf(probe.screens[1], "Merlin")
-  local holdRow = rowOf(probe.screens[1], "STOP")
-  check(shipRow ~= nil and holdRow ~= nil, "both rows are drawn", shipRow)
+  check(shipRow ~= nil, "the ship is listed", shipRow)
+
+  local after = runRemote{
+    script = { towerNet(ships), click(2, shipRow or 1), snap() },
+  }
+  local stopRow = rowOf(after.screens[1], "STOP")
+  check(stopRow ~= nil, "and the actions are drawn once it is picked", stopRow)
 
   local r = runRemote{
     script = {
-      towerNet(ships), snap(),
+      towerNet(ships),
       click(2, shipRow or 1),
-      click(2, holdRow or 1),
+      click(2, stopRow or 1),
     },
   }
   local msg = sentOf(r, "command")
@@ -448,6 +458,164 @@ do
   }
   check(sentOf(r, "wp!") == nil, "with no tower, no waypoint is sent")
   check(onScreen(r.screens[2], "tower"), "and it says the tower is needed")
+end
+
+--------------------------------------------------------------------------------
+section("one ship's panel")
+--------------------------------------------------------------------------------
+
+-- Everything that belongs to one ship rather than to the fleet: its gauges, the
+-- hull it is made of, and the gains that decide how it flies. All three were
+-- reachable in the protocol and by nothing a thumb could press.
+do
+  local ships = { { id = SHIP, label = "Kestrel", alt = 120,
+                    flight = { state = "cruise", alt = 120 } } }
+
+  -- Probed in steps, each a complete run of its own. Nesting one runRemote
+  -- inside another's script table tangles the event queue -- the inner run
+  -- drains it -- and the suite hangs rather than failing, which is the one
+  -- outcome test/run.lua cannot report.
+  local probe = runRemote{ script = { towerNet(ships), snap() } }
+  local shipRow = rowOf(probe.screens[1], "Kestrel")
+
+  local picked = runRemote{
+    script = { towerNet(ships), click(2, shipRow or 1), snap() },
+  }
+  local openRow = rowOf(picked.screens[1], "SHIP")
+  check(openRow ~= nil, "picking a ship offers its own panel", openRow)
+
+  local opened = runRemote{
+    script = { towerNet(ships), click(2, shipRow or 1),
+               click(2, openRow or 1), snap() },
+  }
+
+  -- Opening the panel asks the ship what it is made of. The pocket has no
+  -- /craft.cfg of its own -- it learns by asking.
+  check(sentOf(opened, "hull?") ~= nil, "opening a ship's panel asks for its hull")
+  check(onScreen(opened.screens[1], "asking"),
+        "and says so while it waits", opened.screens[1] and opened.screens[1][8])
+
+  -- With an answer, the controls and the gains are both on screen.
+  local HULL = {
+    name = "Kestrel",
+    controls = {
+      { name = "lift", kind = "bearing", ok = true },
+      { name = "main", kind = "bearing", ok = false },
+    },
+    gains = { hover = 0.5, altP = 0.35, vsP = 0.07, vsI = 0.05,
+              hdgP = 0.015, spdP = 0.18 },
+    problems = {},
+  }
+
+  local full = runRemote{
+    script = { towerNet(ships), click(2, shipRow or 1), click(2, openRow or 1),
+               frame(SHIP, { type = "hull", hull = HULL }), snap() },
+  }
+
+  check(onScreen(full.screens[1], "lift"), "the hull's controls are listed")
+  check(onScreen(full.screens[1], "FAULT"),
+        "and a control that is not answering says so, which is the quickest way "
+        .. "to find the bearing you thought was attached")
+  check(onScreen(full.screens[1], "hover"), "the gains are listed too")
+
+  -- Tuning. Reinstalling to try 0.4 instead of 0.35 is not a tuning loop
+  -- anybody will use, so it happens from the thing in your hand.
+  local gainRow = rowOf(full.screens[1], "hover")
+  local tuned = runRemote{
+    script = { towerNet(ships), click(2, shipRow or 1), click(2, openRow or 1),
+               frame(SHIP, { type = "hull", hull = HULL }),
+               snap(),
+               -- The far right of the row is the plus; the column matters,
+               -- because one row carries two gestures.
+               click(26, gainRow or 1) },
+  }
+
+  local tune, to = sentOf(tuned, "tune")
+  check(tune ~= nil, "tapping + on a gain sends a tune")
+  check(to == SHIP, "straight to the ship, which owns its own gains", to)
+  check(tune and tune.gains and tune.gains.hover > 0.5,
+        "raising it raises it", tune and tune.gains and tune.gains.hover)
+
+  local lowered = runRemote{
+    script = { towerNet(ships), click(2, shipRow or 1), click(2, openRow or 1),
+               frame(SHIP, { type = "hull", hull = HULL }),
+               snap(), click(24, gainRow or 1) },
+  }
+  local down = sentOf(lowered, "tune")
+  check(down and down.gains and down.gains.hover < 0.5,
+        "and the minus lowers it", down and down.gains and down.gains.hover)
+
+  -- A gain is never sent negative: a negative gain is a loop that drives the
+  -- ship away from what it was asked for.
+  local ZERO = { controls = {}, gains = { hover = 0 }, problems = {} }
+  local floorTest = runRemote{
+    script = { towerNet(ships), click(2, shipRow or 1), click(2, openRow or 1),
+               frame(SHIP, { type = "hull", hull = ZERO }), snap() },
+  }
+  local zeroRow = rowOf(floorTest.screens[1], "hover")
+  local pushed = runRemote{
+    script = { towerNet(ships), click(2, shipRow or 1), click(2, openRow or 1),
+               frame(SHIP, { type = "hull", hull = ZERO }),
+               snap(), click(24, zeroRow or 1) },
+  }
+  local floored = sentOf(pushed, "tune")
+  check(floored and floored.gains.hover >= 0, "and never below zero",
+        floored and floored.gains.hover)
+end
+
+--------------------------------------------------------------------------------
+section("routes and deleting")
+--------------------------------------------------------------------------------
+
+do
+  local waypoints = {
+    quarry = { name = "quarry", x = 0, y = 70, z = 300, kind = "point" },
+    base   = { name = "base",   x = 0, y = 64, z = 0,   kind = "pad" },
+  }
+  local ships = { { id = SHIP, label = "Kestrel", flight = { state = "idle" } } }
+
+  -- Deleting a waypoint is the more dangerous of the two gestures on the row,
+  -- so it lives in the last column and tapping the name does the harmless one.
+  local probe = runRemote{
+    script = { towerNet(ships, waypoints, "base"), tab("nav"), snap() },
+  }
+  local quarryRow = rowOf(probe.screens[1], "quarry")
+  check(quarryRow ~= nil, "the nav tab lists waypoints", quarryRow)
+
+  local homed = runRemote{
+    script = { towerNet(ships, waypoints, "base"), tab("nav"),
+               snap(), click(2, quarryRow or 1) },
+  }
+  check(sentOf(homed, "home!") ~= nil, "tapping the name sets home")
+  check(sentOf(homed, "wp-") == nil, "and deletes nothing")
+
+  local deleted = runRemote{
+    script = { towerNet(ships, waypoints, "base"), tab("nav"),
+               snap(), click(26, quarryRow or 1) },
+  }
+  local gone = sentOf(deleted, "wp-")
+  check(gone ~= nil, "tapping the x deletes it")
+  check(gone and gone.name == "quarry", "the one that was tapped", gone and gone.name)
+
+  -- A saved route is two taps to fly, which is the point of saving one.
+  local routes = { run = { name = "run", names = { "quarry", "base" }, alt = 140 } }
+  local withRoutes = runRemote{
+    script = { frame(TOWER, { type = "net", ships = ships,
+                              waypoints = waypoints, routes = routes,
+                              home = "base" }),
+               tab("fly"), snap() },
+  }
+  check(onScreen(withRoutes.screens[1], "run"), "saved routes are listed")
+
+  local routeRow = rowOf(withRoutes.screens[1], "run")
+  local loaded = runRemote{
+    script = { frame(TOWER, { type = "net", ships = ships,
+                              waypoints = waypoints, routes = routes,
+                              home = "base" }),
+               tab("fly"), snap(), click(2, routeRow or 1), snap() },
+  }
+  check(onScreen(loaded.screens[2], "1 quarry"),
+        "and tapping one loads its legs", loaded.screens[2] and loaded.screens[2][6])
 end
 
 --------------------------------------------------------------------------------

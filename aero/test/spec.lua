@@ -497,6 +497,122 @@ do
 end
 
 --------------------------------------------------------------------------------
+section("ui")
+--------------------------------------------------------------------------------
+
+-- Only the pure layout arithmetic. Everything that draws needs a screen and is
+-- exercised by the two UI suites; this is the part with the off-by-ones in it,
+-- and the part where a wrong answer means a button that is one row from where
+-- it looks.
+do
+  local ui = require("lib.ui")
+
+  check(ui.fit("hello", 10) == "hello", "fit leaves a short string alone")
+  check(#ui.fit("hello", 10, true) == 10, "and pads it when asked")
+  check(#ui.fit("a very long name indeed", 8) == 8, "a long one is cut to width")
+  check(ui.fit("a very long name", 8):sub(-1) == ".",
+        "and marked, so a truncated name does not read as a real one")
+  check(ui.fit(nil, 5) == "", "nil is empty, not the word nil")
+  check(ui.fit("abc", 0) == "", "and a zero width is empty rather than an error")
+
+  check(#ui.centre("ab", 6) <= 6, "centre never exceeds its width")
+  check(ui.centre("ab", 6):find("ab", 1, true) > 1, "and actually centres")
+
+  check(ui.num(nil) == "--", "no reading is dashes, never zero")
+  check(ui.num(3.7) == "4", "a number is rounded for a narrow column")
+
+  -- nil in, nil out. A gauge with no reading has to draw itself as empty and
+  -- say so, which is not the same as drawing itself at zero -- the whole
+  -- difference between "no fuel reading" and "no fuel".
+  check(ui.ratio(nil, 0, 10) == nil, "no value is no ratio")
+  check(ui.ratio(5, 0, 10) == 0.5, "half way is a half")
+  check(ui.ratio(-5, 0, 10) == 0, "below the bottom clamps")
+  check(ui.ratio(50, 0, 10) == 1, "and above the top")
+  check(ui.ratio(5, 3, 3) == 0, "a zero span does not divide by zero")
+
+  -- Tabs. The same arithmetic decides where a tab is drawn and what a click at
+  -- a column means, which is the only way the two cannot disagree.
+  local TABS = { "fleet", "fly", "nav", "log" }
+  local layout = ui.tabLayout(TABS, 26)
+  check(#layout == 4, "four tabs")
+  check(layout[1].x == 1, "the first starts at the left edge", layout[1].x)
+  check(layout[4].x + layout[4].w - 1 == 26,
+        "and the last reaches the right one, with no gap",
+        layout[4].x + layout[4].w - 1)
+
+  for _, tab in ipairs(layout) do
+    for x = tab.x, tab.x + tab.w - 1 do
+      checkQuiet(ui.tabAt(TABS, 26, x) == tab.name,
+                 "column " .. x .. " hits " .. tab.name)
+    end
+  end
+  check(true, "every column of every tab hits that tab")
+  check(ui.tabAt(TABS, 26, 99) == nil, "and a click past the end hits none")
+
+  -- The altitude tape reads the way the world does: up is up.
+  local rows = ui.tapeRows(100, 5, 10)
+  check(#rows == 5, "a tape has the rows it was asked for", #rows)
+  check(rows[1].value > rows[#rows].value, "the top of the tape is the highest")
+  check(rows[3].here == true, "and the middle row is where the ship is")
+  check(rows[3].value == 100, "at its altitude", rows[3].value)
+  check(#ui.tapeRows(nil, 5, 10) == 0, "no altitude is no tape")
+
+  -- The compass. Heading is Minecraft yaw, so 0 is south and 180 is north --
+  -- getting this backwards would put every letter on the wrong side.
+  local strip = ui.compassStrip(0, 21)
+  check(#strip == 21, "the strip is the width asked for", #strip)
+  check(strip:find("S", 1, true) ~= nil, "heading 0 shows S in view")
+  check(ui.compassStrip(180, 21):find("N", 1, true) ~= nil, "and 180 shows N")
+  check(ui.compassStrip(nil, 10) == ("-"):rep(10), "no heading is a blank strip")
+
+  -- The horizon. Positive pitch is nose down, matching lib/sable and lib/hull,
+  -- and nose down puts more ground in view -- so the horizon rises up the
+  -- screen. A sign error here draws an aircraft flying into the sky when it is
+  -- diving.
+  local level = ui.horizonRows(0, 0, 9, 8)
+  check(#level == 9, "a horizon row per column", #level)
+  check(level[1] == level[9], "level flight is a flat horizon")
+
+  local nose = ui.horizonRows(20, 0, 9, 8)
+  check(nose[1] > level[1], "nose down puts more ground in view", nose[1])
+
+  local rolled = ui.horizonRows(0, 30, 9, 8)
+  check(rolled[1] ~= rolled[9], "roll tips it")
+  check((rolled[1] < rolled[9]) ~= (ui.horizonRows(0, -30, 9, 8)[1] < rolled[9]),
+        "and rolling the other way tips it the other way")
+
+  -- Rows carry their own handler, which is the whole reason this pattern exists.
+  local l = ui.list()
+  local hit = nil
+  ui.row(l, { name = "a", click = function() hit = "a" end })
+  ui.row(l, { name = "b", click = function() hit = "b" end })
+  l.entries[1].y, l.entries[2].y = 5, 6
+
+  check(ui.click(l, 6) == true, "a click on a row runs its handler")
+  check(hit == "b", "the right one", hit)
+  check(ui.click(l, 99) == false, "and a click on nothing takes nothing")
+
+  -- Typing, which never goes near read().
+  local field = ui.field("name")
+  ui.type(field, "a")
+  ui.type(field, "!")
+  ui.type(field, "b")
+  check(field.text == "ab", "a field takes what the pattern allows", field.text)
+  ui.backspace(field)
+  check(field.text == "a", "and backspace works")
+
+  for _ = 1, 40 do ui.type(field, "x") end
+  check(#field.text <= field.limit, "a field has a limit", #field.text)
+
+  -- One table of state colours, so the tower, the pocket and the ship cannot
+  -- disagree about what orange means.
+  check(ui.stateColour.cruise ~= ui.stateColour.loiter,
+        "cruise and loiter do not look the same")
+  check(ui.guardColour(nil) == ui.theme.dim, "no guard is not an alarm colour")
+  check(ui.guardColour("clearance") == ui.theme.bad, "a guard is")
+end
+
+--------------------------------------------------------------------------------
 section("sable")
 --------------------------------------------------------------------------------
 

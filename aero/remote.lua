@@ -1,11 +1,12 @@
 --- Flight remote. Runs on an advanced pocket computer.
 --
--- The thing you carry: see where the fleet is, send it somewhere, put a
--- waypoint down where you are standing. It holds no authoritative state of its
--- own and never guesses -- a ship that has gone quiet says LOST rather than
--- showing the last position it had as though it were live. A dashboard
--- confidently drawing a ship where it was ten seconds ago is worse than one that
--- admits it does not know, because somebody will go and look there.
+-- The thing you carry: see where the fleet is, send it somewhere, put a waypoint
+-- down where you are standing, and tune a ship that is not flying the way you
+-- want. It holds no authoritative state of its own and never guesses -- a ship
+-- that has gone quiet says LOST rather than showing the last position it had as
+-- though it were live. A dashboard confidently drawing a ship where it was ten
+-- seconds ago is worse than one that admits it does not know, because somebody
+-- will go and look there.
 --
 -- Two routes, and the header always says which one is in use:
 --
@@ -17,6 +18,10 @@
 --           the ship has heard of the quarry -- which is the part that matters
 --           when you are standing in a field watching one circle.
 --
+-- Five screens. Four are tabs along the bottom, where a thumb is; the fifth is a
+-- ship's own panel, reached by picking it out of the fleet, and is where the
+-- things that belong to one ship live -- its gauges, its hull, its gains.
+--
 -- Deliberately not read() anywhere: it blocks the event loop, telemetry stops
 -- arriving, and the link reads LOST while you type.
 
@@ -24,6 +29,7 @@ local config = require("lib.config")
 local net    = require("lib.net")
 local nav    = require("lib.nav")
 local log    = require("lib.log")
+local ui     = require("lib.ui")
 
 local W, H = term.getSize()
 
@@ -38,6 +44,7 @@ local link = {
   ships  = {},          -- [id] = telemetry, for direct mode
   heard  = {},          -- [id] = os.clock()
   hulls  = {},          -- [id] = last `hull` reply
+  asked  = {},          -- [id] = when we last asked for one
   note   = nil,
 }
 
@@ -92,34 +99,37 @@ end
 
 local TABS = { "fleet", "fly", "nav", "log" }
 
-local screen = "fleet"
-local scroll = 0
-local rows   = {}          -- rebuilt every draw; carries the clicks
+local screen = "fleet"     -- one of TABS, or "ship"
+local list   = ui.list()
 local flash  = nil
 local logs   = {}
-local typing = nil         -- { field, text } while a name is typed
+local typing = nil
 
 local selected = nil       -- ship id, or nil for the whole fleet
 local plan = { names = {}, alt = 100 }
 
-local function note(text)
-  flash = { text = text, until_ = now() + 3 }
+local function note(text) flash = ui.flash(text, now()) end
+
+--- The selected ship's row out of the roster, or nil.
+local function ship()
+  if not selected then return nil end
+  for _, s in ipairs(roster()) do
+    if s.id == selected then return s end
+  end
+  return nil
 end
 
-local function colour(c)
-  if term.isColour() then term.setTextColour(c) end
-end
-
-local function at(x, y, text, c)
-  colour(c or colours.white)
-  term.setCursorPos(x, y)
-  term.write(text)
-end
-
-local function fit(text, width)
-  text = tostring(text or "")
-  if #text <= width then return text end
-  return text:sub(1, math.max(0, width - 1)) .. "."
+--- Ask a ship to describe its hull, at most once every few seconds.
+--
+-- The reply is a whole control list and does not change while the ship is
+-- flying, so asking on every redraw would be several frames a second of traffic
+-- for an answer we already have.
+local function wantHull(id)
+  if link.hulls[id] then return link.hulls[id] end
+  if (now() - (link.asked[id] or -math.huge)) < 3 then return nil end
+  link.asked[id] = now()
+  net.send(id, { type = "hull?" })
+  return nil
 end
 
 --- Send an order to the selected ship, or to every ship if none is selected.
@@ -147,50 +157,137 @@ local function order(body, why)
 end
 
 --------------------------------------------------------------------------------
--- Row building
+-- Rows
 --------------------------------------------------------------------------------
 
--- Every screen builds a flat list of rows and hands each one a click handler.
--- Working out what was clicked from coordinates and the current screen was the
--- thing that went wrong most often in mining/remote.lua; a row that carries its
--- own action cannot drift out of step with where it was drawn.
-local function row(entry)
-  rows[#rows + 1] = entry
-  return entry
-end
-
-local STATE_COLOUR = {
-  idle = colours.grey, cruise = colours.lime, loiter = colours.orange,
-  emergency = colours.red,
-}
+local function row(entry) return ui.row(list, entry) end
 
 local function buildFleet()
-  local list = roster()
-  if #list == 0 then
+  local fleet = roster()
+  if #fleet == 0 then
     row({ kind = "note", text = "No ships answering." })
     return
   end
 
-  for _, s in ipairs(list) do
-    row({
-      kind = "ship", ship = s,
-      click = function()
-        -- Tapping the selected ship clears the selection, which is how you get
-        -- back to commanding the whole fleet without a separate control.
-        selected = (selected == s.id) and nil or s.id
-      end,
-    })
+  for _, s in ipairs(fleet) do
+    row({ kind = "ship", ship = s, click = function()
+      selected = (selected == s.id) and nil or s.id
+    end })
+  end
+
+  -- One ship picked out means its own panel is worth offering. With none
+  -- picked, the buttons below command the whole fleet, which is the other
+  -- genuinely useful mode and needs no extra control to reach.
+  if selected then
+    row({ kind = "action", text = "SHIP   gauges, hull, gains",
+          colour = ui.theme.accent,
+          click = function() screen = "ship" list.scroll = 0 end })
   end
 
   row({ kind = "gap" })
-  row({ kind = "action", text = "HOLD   stop and hover", colour = colours.yellow,
+  row({ kind = "action", text = "HOLD   stop and hover", colour = ui.theme.warn,
         click = function() order({ type = "hold" }, "holding") end })
-  row({ kind = "action", text = "LAND   come down here", colour = colours.yellow,
+  row({ kind = "action", text = "LAND   come down here", colour = ui.theme.warn,
         click = function() order({ type = "land" }, "landing") end })
-  row({ kind = "action", text = "RTB    return to base", colour = colours.lime,
+  row({ kind = "action", text = "RTB    return to base", colour = ui.theme.ok,
         click = function() order({ type = "rtb" }, "returning") end })
-  row({ kind = "action", text = "STOP   descend now", colour = colours.red,
+  row({ kind = "action", text = "STOP   descend now", colour = ui.theme.bad,
         click = function() order({ type = "stop" }, "descending") end })
+end
+
+--- One ship: what it is doing, what it is made of, and how it is tuned.
+local function buildShip()
+  local s = ship()
+  if not s then
+    row({ kind = "note", text = "That ship has gone." })
+    row({ kind = "action", text = "< back", colour = ui.theme.accent,
+          click = function() screen = "fleet" end })
+    return
+  end
+
+  row({ kind = "action", text = "< " .. (s.label or ("ship " .. s.id)),
+        colour = ui.theme.accent,
+        click = function() screen = "fleet" list.scroll = 0 end })
+
+  local flight = s.flight or {}
+  local tlm = link.ships[s.id] or {}
+
+  row({ kind = "head", label = flight.state or "?",
+        colour = ui.stateColour[flight.state] })
+
+  -- Gauges rather than numbers where a gauge says it faster: altitude against
+  -- the target it was given, and fuel against the tank.
+  row({ kind = "gauge", label = ("alt %s"):format(ui.num(s.alt)),
+        value = s.alt, lo = 0, hi = math.max(1, (flight.alt or s.alt or 1) * 1.5),
+        colour = ui.theme.cold })
+
+  if tlm.capacity and tlm.capacity > 0 then
+    row({ kind = "gauge", label = ("fuel %ss"):format(ui.num(tlm.burn)),
+          value = tlm.fuel, lo = 0, hi = tlm.capacity,
+          colour = (tlm.burn and tlm.burn < 120) and ui.theme.bad or ui.theme.ok })
+  end
+
+  row({ kind = "pair", left = "speed", right = ui.num(s.speed, "%.1f") })
+  row({ kind = "pair", left = "hdg", right = ui.num(s.heading) })
+  row({ kind = "pair", left = "vs", right = ui.num(tlm.vs, "%+.1f") })
+  row({ kind = "pair", left = "tilt", right = ui.num(tlm.tilt) })
+  row({ kind = "pair", left = "fix", right = tostring(s.source or "-") })
+  if flight.guard then
+    row({ kind = "pair", left = "guard", right = flight.guard,
+          colour = ui.guardColour(flight.guard) })
+  end
+
+  -- The hull. The pocket has no /craft.cfg of its own -- it learns what a ship
+  -- is made of by asking, which is also the quickest way to find out that the
+  -- bearing you thought was lift is not attached.
+  local hull = wantHull(s.id)
+  row({ kind = "head", label = "hull" })
+
+  if not hull then
+    row({ kind = "note", text = "  asking..." })
+  else
+    for _, control in ipairs(hull.controls or {}) do
+      row({ kind = "control", control = control })
+    end
+    for _, why in ipairs(hull.problems or {}) do
+      row({ kind = "note", text = why, colour = ui.theme.warn })
+    end
+  end
+
+  -- Gains. Reinstalling to try 0.4 instead of 0.35 is not a tuning loop anybody
+  -- will use, so the numbers that decide how a ship flies are editable from the
+  -- thing in your hand while it is in the air in front of you.
+  if hull then
+    row({ kind = "head", label = "gains" })
+
+    local TUNABLE = { "hover", "altP", "vsP", "vsI", "hdgP", "spdP" }
+    for _, key in ipairs(TUNABLE) do
+      local value = (hull.gains or {})[key]
+      row({
+        kind = "gain", key = key, value = value,
+        click = function(x)
+          local gains = {}
+          for k, v in pairs(hull.gains or {}) do gains[k] = v end
+
+          -- A tenth of the current value per tap, so one control works for a
+          -- gain of 0.5 and a gain of 0.015 without needing to know which is
+          -- which. Never below zero: a negative gain is a loop that drives the
+          -- ship away from what it was asked for.
+          local base = tonumber(value) or 0
+          local step = math.max(0.001, math.abs(base) * 0.1)
+          local up = (x or 0) >= W - 1
+          gains[key] = math.max(0, base + (up and step or -step))
+
+          net.send(s.id, { type = "tune", gains = gains })
+          -- Optimistic, and corrected by the next hull reply. Waiting for the
+          -- round trip makes a button feel broken on a link that is merely slow.
+          hull.gains = gains
+          link.asked[s.id] = -math.huge
+          note(("%s %.3f"):format(key, gains[key]))
+        end,
+      })
+    end
+  end
 end
 
 local function buildFly()
@@ -203,11 +300,10 @@ local function buildFly()
     return
   end
 
-  row({ kind = "head", label = ("alt %d  (- +)"):format(plan.alt) })
-  row({ kind = "action", text = "  -10", colour = colours.lightGrey,
-        click = function() plan.alt = math.max(0, plan.alt - 10) end })
-  row({ kind = "action", text = "  +10", colour = colours.lightGrey,
-        click = function() plan.alt = plan.alt + 10 end })
+  row({ kind = "head", label = ("alt %d"):format(plan.alt) })
+  row({ kind = "step", text = "  altitude", click = function(x)
+    plan.alt = math.max(0, plan.alt + (((x or 0) >= W - 1) and 10 or -10))
+  end })
 
   row({ kind = "head", label = "route" })
   for i, name in ipairs(plan.names) do
@@ -219,7 +315,7 @@ local function buildFly()
   end
 
   row({ kind = "gap" })
-  row({ kind = "action", text = "FLY IT", colour = colours.lime,
+  row({ kind = "action", text = "FLY IT", colour = ui.theme.ok,
         click = function()
           if #plan.names == 0 then
             note("no route")
@@ -228,62 +324,82 @@ local function buildFly()
           order({ type = "fly", names = plan.names, alt = plan.alt }, "flying")
         end })
 
+  if #plan.names > 1 and haveServer() then
+    row({ kind = "action", text = "SAVE as...", colour = ui.theme.accent,
+          click = function() typing = ui.field("route") end })
+  end
+
+  -- Routes the tower has kept, so a run you fly every day is two taps.
+  local routes = (haveServer() and link.net and link.net.routes) or {}
+  local routeNames = {}
+  for name in pairs(routes) do routeNames[#routeNames + 1] = name end
+  table.sort(routeNames)
+
+  if #routeNames > 0 then
+    row({ kind = "head", label = "routes" })
+    for _, name in ipairs(routeNames) do
+      local route = routes[name]
+      row({ kind = "route", name = name, route = route, click = function()
+        plan.names = {}
+        for _, leg in ipairs(route.names or {}) do
+          plan.names[#plan.names + 1] = leg
+        end
+        plan.alt = tonumber(route.alt) or plan.alt
+        note("loaded " .. name)
+      end })
+    end
+  end
+
   row({ kind = "head", label = "waypoints" })
   for _, name in ipairs(names) do
-    local point = wp[name]
-    row({
-      kind = "waypoint", name = name, point = point,
-      click = function()
-        plan.names[#plan.names + 1] = name
-        note("+ " .. name)
-      end,
-    })
+    row({ kind = "waypoint", name = name, point = wp[name], click = function()
+      plan.names[#plan.names + 1] = name
+      note("+ " .. name)
+    end })
   end
 end
 
 local function buildNav()
   local wp = waypoints()
 
-  row({ kind = "action", text = "+ waypoint here", colour = colours.lime,
+  row({ kind = "action", text = "+ waypoint here", colour = ui.theme.ok,
         click = function()
-          if not haveServer() then
-            note("waypoints need the tower")
-            return
-          end
-          typing = { field = "waypoint", text = "" }
+          if not haveServer() then note("waypoints need the tower") return end
+          typing = ui.field("waypoint")
         end })
 
-  row({ kind = "action", text = "+ pad here", colour = colours.lime,
+  row({ kind = "action", text = "+ pad here", colour = ui.theme.ok,
         click = function()
-          if not haveServer() then
-            note("waypoints need the tower")
-            return
-          end
-          typing = { field = "pad", text = "" }
+          if not haveServer() then note("waypoints need the tower") return end
+          typing = ui.field("pad")
         end })
 
   row({ kind = "gap" })
 
   local names = nav.names(wp)
   if #names == 0 then
-    row({ kind = "note", text = "None yet." })
+    row({ kind = "note", text = "No waypoints." })
     return
   end
 
+  row({ kind = "head", label = "tap: home    x: delete" })
+
   local home = link.net and link.net.home
   for _, name in ipairs(names) do
-    local point = wp[name]
     row({
-      kind = "waypoint", name = name, point = point, home = (home == name),
-      -- Tapping a waypoint here makes it home rather than deleting it. Deletion
-      -- is the more dangerous of the two and should not be one tap away from
-      -- something you do while reading a list.
-      click = function()
-        if not haveServer() then
-          note("needs the tower")
-          return
+      kind = "waypoint", name = name, point = wp[name], home = (home == name),
+      delete = true,
+      -- Two gestures on one row, because deleting is the more dangerous of the
+      -- two and should not be the thing that happens when you tap a list you
+      -- were reading. The x sits in the last column and nothing else does.
+      click = function(x)
+        if not haveServer() then note("needs the tower") return end
+        if (x or 0) >= W then
+          toServer({ type = "wp-", name = name })
+          note("deleting " .. name)
+        else
+          toServer({ type = "home!", name = name })
         end
-        toServer({ type = "home!", name = name })
       end,
     })
   end
@@ -292,7 +408,7 @@ end
 local function buildLog()
   if #logs == 0 then
     row({ kind = "note", text = haveServer() and "Nothing logged yet."
-                                or "The log lives on the tower." })
+                              or "The log lives on the tower." })
     return
   end
   for _, entry in ipairs(logs) do
@@ -304,109 +420,131 @@ end
 -- Drawing
 --------------------------------------------------------------------------------
 
-local function drawRow(entry, y)
+local function drawRow(entry, y, w)
   if entry.kind == "ship" then
     local s = entry.ship
-    local mark = (selected == s.id) and ">" or " "
+    local chosen = (selected == s.id)
+    if chosen then ui.fill(1, y, w, 1, colours.blue) end
+    local bg = chosen and colours.blue or ui.theme.bg
 
     if s.stale then
-      at(1, y, mark .. fit(s.label or ("ship " .. s.id), 10), colours.red)
-      at(13, y, "LOST", colours.red)
+      ui.at(1, y, ui.fit((chosen and ">" or " ") .. (s.label or ("ship " .. s.id)),
+            12, true), ui.theme.bad, bg)
+      ui.at(13, y, ui.fit("LOST", w - 13, true), ui.theme.bad, bg)
     else
       local flight = s.flight or {}
-      at(1, y, mark .. fit(s.label or ("ship " .. s.id), 10),
-         (selected == s.id) and colours.yellow or colours.white)
-      at(13, y, fit(flight.state or "?", 8),
-         STATE_COLOUR[flight.state] or colours.lightGrey)
-      if s.alt then at(22, y, ("%4.0f"):format(s.alt), colours.lightGrey) end
+      ui.at(1, y, ui.fit((chosen and ">" or " ") .. (s.label or ("ship " .. s.id)),
+            12, true), ui.theme.text, bg)
+      ui.at(13, y, ui.fit(flight.state or "?", 8, true),
+            ui.stateColour[flight.state] or ui.theme.dim, bg)
+      ui.at(22, y, ("%4s"):format(ui.num(s.alt)), ui.theme.dim, bg)
     end
+
+  elseif entry.kind == "gauge" then
+    ui.bar(1, y, w, entry.value, entry.lo, entry.hi, entry.colour,
+           " " .. entry.label)
+
+  elseif entry.kind == "pair" then
+    ui.at(1, y, ui.fit(" " .. entry.left, 9, true), ui.theme.dim)
+    ui.at(10, y, ui.fit(entry.right, w - 10, true), entry.colour or ui.theme.text)
+
+  elseif entry.kind == "control" then
+    local c = entry.control
+    ui.at(1, y, ui.fit(" " .. c.name, 10, true),
+          c.ok and ui.theme.text or ui.theme.bad)
+    ui.at(11, y, ui.fit(c.kind or "?", 7, true), ui.theme.dim)
+    ui.at(18, y, ui.fit(c.ok and "ok" or "FAULT", w - 18, true),
+          c.ok and ui.theme.ok or ui.theme.bad)
+
+  elseif entry.kind == "gain" then
+    ui.at(1, y, ui.fit(" " .. entry.key, 8, true), ui.theme.dim)
+    ui.at(9, y, ui.fit(entry.value and ("%.3f"):format(entry.value) or "-",
+          w - 13, true), ui.theme.text)
+    ui.at(w - 3, y, "- +", ui.theme.accent)
+
+  elseif entry.kind == "step" then
+    ui.at(1, y, ui.fit(entry.text, w - 4, true), ui.theme.text)
+    ui.at(w - 3, y, "- +", ui.theme.accent)
 
   elseif entry.kind == "waypoint" then
     local p = entry.point or {}
-    at(1, y, (entry.home and "*" or " ") .. fit(entry.name, 11),
-       entry.home and colours.lime or colours.white)
-    at(13, y, fit(("%d %d"):format(p.x or 0, p.z or 0), W - 14), colours.lightGrey)
-    if p.kind == "pad" then at(W, y, "=", colours.lightBlue) end
+    ui.at(1, y, ui.fit((entry.home and "*" or " ") .. entry.name, 12, true),
+          entry.home and ui.theme.ok or ui.theme.text)
+    ui.at(13, y, ui.fit(("%d %d"):format(p.x or 0, p.z or 0),
+          w - 14, true), ui.theme.dim)
+    if p.kind == "pad" then ui.at(w - 1, y, "=", ui.theme.cold) end
+    if entry.delete then ui.at(w, y, "x", ui.theme.bad) end
+
+  elseif entry.kind == "route" then
+    ui.at(1, y, ui.fit(" " .. entry.name, 14, true), ui.theme.text)
+    ui.at(15, y, ui.fit(("%d legs"):format(#(entry.route.names or {})),
+          w - 15, true), ui.theme.dim)
 
   elseif entry.kind == "leg" then
-    at(1, y, ("%d %s"):format(entry.index, fit(entry.name, W - 4)), colours.white)
-    at(W, y, "x", colours.red)
+    ui.at(1, y, ui.fit(("%d %s"):format(entry.index, entry.name), w - 1, true),
+          ui.theme.text)
+    ui.at(w, y, "x", ui.theme.bad)
 
   elseif entry.kind == "log" then
-    at(1, y, fit(log.line(entry.entry), W), colours.lightGrey)
+    ui.at(1, y, ui.fit(log.line(entry.entry), w, true), ui.theme.dim)
 
   elseif entry.kind == "head" then
-    at(1, y, fit(entry.label, W), colours.cyan)
+    ui.fill(1, y, w, 1, ui.theme.panel)
+    ui.at(1, y, ui.fit(" " .. entry.label, w, true),
+          entry.colour or ui.theme.bg, ui.theme.panel)
 
   elseif entry.kind == "action" then
-    at(1, y, fit(entry.text, W), entry.colour or colours.white)
+    ui.at(1, y, ui.fit(" " .. entry.text, w, true), entry.colour or ui.theme.text)
 
   elseif entry.kind == "note" then
-    at(1, y, fit(entry.text, W), colours.grey)
+    ui.at(1, y, ui.fit(entry.text, w, true), entry.colour or ui.theme.dim)
   end
+
+  ui.paint(ui.theme.text, ui.theme.bg)
 end
 
 local function draw()
-  rows = {}
+  list.entries = {}
   if screen == "fleet" then buildFleet()
+  elseif screen == "ship" then buildShip()
   elseif screen == "fly" then buildFly()
   elseif screen == "nav" then buildNav()
   else buildLog() end
 
-  term.setBackgroundColour(colours.black)
+  ui.paint(ui.theme.text, ui.theme.bg)
   term.clear()
 
-  at(1, 1, "AERO", colours.cyan)
-  if selected then
-    at(6, 1, fit("#" .. selected, 8), colours.yellow)
-  else
-    at(6, 1, "all", colours.grey)
-  end
+  -- The header is the link light. Which of the two routes is live decides what
+  -- half these screens can do, so it is never more than a glance away.
+  local live, colour
+  if haveServer() then live, colour = "TOWER ", ui.theme.ok
+  elseif #roster() > 0 then live, colour = "DIRECT", ui.theme.warn
+  else live, colour = " LOST ", ui.theme.bad end
 
-  if haveServer() then
-    at(W - 5, 1, "TOWER ", colours.lime)
-  elseif #roster() > 0 then
-    at(W - 5, 1, "DIRECT", colours.yellow)
-  else
-    at(W - 5, 1, " LOST ", colours.red)
-  end
+  ui.fill(1, 1, W, 1, colour)
+  ui.at(1, 1, ui.fit(" AERO", 6, true), ui.theme.bg, colour)
+  ui.at(7, 1, ui.fit(selected and ("#" .. selected) or "all", W - 13, true),
+        ui.theme.bg, colour)
+  ui.at(W - 5, 1, live, ui.theme.bg, colour)
 
   local top, bottom = 3, H - 2
-  local visible = bottom - top + 1
-
-  if scroll > math.max(0, #rows - visible) then
-    scroll = math.max(0, #rows - visible)
+  if #list.entries == 0 then
+    ui.at(1, 4, ui.fit(link.note, W, true), ui.theme.dim)
   end
-
-  if #rows == 0 then
-    at(1, 4, fit(link.note, W), colours.grey)
-  end
-
-  for i = 1, visible do
-    local entry = rows[i + scroll]
-    if entry then
-      entry.y = top + i - 1
-      drawRow(entry, entry.y)
-    end
-  end
-
-  if #rows > visible then
-    at(W, 2, "^", colours.grey)
-    at(W, H - 1, "v", colours.grey)
-  end
+  ui.draw(list, 1, top, W, bottom - top + 1, function(entry, y)
+    drawRow(entry, y, W)
+  end)
 
   -- Tabs on the bottom row, which is where a thumb is on a pocket computer.
-  local x = 1
-  for _, name in ipairs(TABS) do
-    at(x, H, name:sub(1, 5), screen == name and colours.yellow or colours.grey)
-    x = x + 6
-  end
+  ui.tabs(H, W, TABS, screen == "ship" and "fleet" or screen)
 
   if typing then
-    at(1, H - 1, fit(typing.field .. ": " .. typing.text .. "_", W), colours.yellow)
-  elseif flash and now() < flash.until_ then
-    at(1, H - 1, fit(flash.text, W), colours.lime)
+    ui.drawField(typing, H - 1, W)
+  else
+    ui.drawFlash(flash, now(), H - 1, W)
   end
+
+  ui.paint(ui.theme.text, ui.theme.bg)
 end
 
 --------------------------------------------------------------------------------
@@ -414,31 +552,28 @@ end
 --------------------------------------------------------------------------------
 
 local function clickTab(x)
-  local index = math.floor((x - 1) / 6) + 1
-  local name = TABS[index]
+  local name = ui.tabAt(TABS, W, x)
   if not name then return end
 
-  screen, scroll = name, 0
+  screen, list.scroll = name, 0
   if name == "log" then toServer({ type = "log?", n = 30 }) end
 end
 
 local function onClick(x, y)
   if y == H then return clickTab(x) end
 
-  for _, entry in ipairs(rows) do
+  -- The column is handed to the row's own handler, because two of them have two
+  -- gestures on one line -- delete at the far right, and the minus and plus of a
+  -- stepper. Everything else ignores it.
+  for _, entry in ipairs(list.entries) do
     if entry.y == y and entry.click then
-      entry.click()
+      entry.click(x)
       return
     end
   end
 end
 
-local function onChar(ch)
-  if not typing then return end
-  if #typing.text < 16 and ch:match("[%w%-_]") then
-    typing.text = typing.text .. ch
-  end
-end
+local function onChar(ch) ui.type(typing, ch) end
 
 --- Where the pocket computer is, for putting a waypoint down.
 --
@@ -452,26 +587,38 @@ local function here()
   return { x = math.floor(x), y = math.floor(y), z = math.floor(z) }
 end
 
+local function commit()
+  if typing.text == "" then return end
+
+  if typing.prompt == "route" then
+    toServer({ type = "route!", name = typing.text, names = plan.names,
+               alt = plan.alt })
+    note("saved " .. typing.text)
+    return
+  end
+
+  local at = here()
+  if not at then
+    note("no GPS fix here")
+    return
+  end
+
+  toServer({
+    type = "wp!",
+    name = typing.text,
+    x = at.x, y = at.y, z = at.z,
+    kind = typing.prompt == "pad" and "pad" or "point",
+  })
+  note("sent " .. typing.text)
+end
+
 local function onKey(key)
   if typing then
     if key == keys.enter then
-      if typing.text ~= "" then
-        local at_ = here()
-        if not at_ then
-          note("no GPS fix here")
-        else
-          toServer({
-            type = "wp!",
-            name = typing.text,
-            x = at_.x, y = at_.y, z = at_.z,
-            kind = typing.field == "pad" and "pad" or "point",
-          })
-          note("sent " .. typing.text)
-        end
-      end
+      commit()
       typing = nil
     elseif key == keys.backspace then
-      typing.text = typing.text:sub(1, -2)
+      ui.backspace(typing)
     elseif key == keys.q then
       typing = nil
     end
@@ -479,14 +626,21 @@ local function onKey(key)
   end
 
   if key == keys.up then
-    scroll = math.max(0, scroll - 1)
+    list.scroll = math.max(0, list.scroll - 1)
   elseif key == keys.down then
-    scroll = scroll + 1
+    list.scroll = list.scroll + 1
   elseif key == keys.tab then
     local index = 1
     for i, name in ipairs(TABS) do if name == screen then index = i end end
-    clickTab((index % #TABS) * 6 + 1)
+    screen = TABS[(index % #TABS) + 1]
+    list.scroll = 0
+    if screen == "log" then toServer({ type = "log?", n = 30 }) end
   elseif key == keys.q then
+    -- Always quit, on every screen. Making it mean "back" on the ship panel was
+    -- tried and taken out again: a quit key that sometimes does not quit is a
+    -- worse trade than one extra tap, the panel already has a back row at the
+    -- top of it, and the first thing the change did was hang the test harness,
+    -- which ends every case by pressing exactly this.
     return "quit"
   end
 end
@@ -499,10 +653,10 @@ term.clear()
 term.setCursorPos(1, 1)
 
 if not net.open() then
-  colour(colours.red)
+  ui.paint(ui.theme.bad, ui.theme.bg)
   print("No wireless modem.")
   print("This pocket computer needs one to see anything.")
-  colour(colours.white)
+  ui.paint(ui.theme.text, ui.theme.bg)
   return
 end
 
@@ -537,6 +691,13 @@ while true do
           note(("sent to %d"):format(msg.sent or 0))
         elseif msg.of == "wp!" then
           note("waypoint saved")
+        elseif msg.of == "wp-" then
+          note("deleted")
+        elseif msg.of == "route!" then
+          note("route saved")
+        elseif msg.of == "tune" then
+          -- The gains have moved, so the cached hull description is stale.
+          link.hulls[from] = nil
         end
       end
     end
@@ -559,6 +720,10 @@ while true do
     onClick(b, c)
     draw()
 
+  elseif event == "mouse_scroll" then
+    list.scroll = math.max(0, list.scroll + a)
+    draw()
+
   elseif event == "char" then
     onChar(a)
     draw()
@@ -574,5 +739,5 @@ end
 
 term.clear()
 term.setCursorPos(1, 1)
-colour(colours.white)
+ui.paint(ui.theme.text, ui.theme.bg)
 print("Remote closed. Every ship carries on.")

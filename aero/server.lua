@@ -19,15 +19,18 @@ local net    = require("lib.net")
 local state  = require("lib.state")
 local nav    = require("lib.nav")
 local log    = require("lib.log")
+local ui     = require("lib.ui")
 
 local W, H = term.getSize()
 
 local fleet = {
-  ships   = {},        -- [id] = last telemetry
-  heard   = {},        -- [id] = os.clock() of the last one
-  screen  = "ships",   -- ships | map | log
-  note    = nil,
-  monitor = nil,
+  ships    = {},       -- [id] = last telemetry
+  heard    = {},       -- [id] = os.clock() of the last one
+  screen   = "ships",  -- ships | map | log | nav
+  selected = nil,      -- a ship id, highlighted here and on the map
+  rows     = nil,      -- the clickable ship list, rebuilt every draw
+  tabs     = {},       -- where the header tabs landed, for hit testing
+  note     = nil,
 }
 
 local function now() return os.clock() end
@@ -92,101 +95,107 @@ end
 -- Drawing
 --------------------------------------------------------------------------------
 
-local function colour(fg, bg)
-  if term.isColour() then
-    if fg then term.setTextColour(fg) end
-    if bg then term.setBackgroundColour(bg) end
-  end
-end
+-- Four views, cycled with Tab or by tapping the header. Everything is drawn
+-- through lib/ui so the tower, the pocket and the ship agree about what orange
+-- means -- a state that reads "loiter" in one colour here and another there is
+-- worse than no colour at all.
 
-local function at(x, y, text, c)
-  colour(c or colours.white)
-  term.setCursorPos(x, y)
-  term.write(text)
-end
-
-local function fit(text, width)
-  text = tostring(text or "")
-  if #text <= width then return text end
-  return text:sub(1, math.max(0, width - 1)) .. "."
-end
-
-local STATE_COLOUR = {
-  idle = colours.grey, preflight = colours.yellow, takeoff = colours.yellow,
-  climb = colours.yellow, cruise = colours.lime, descend = colours.yellow,
-  approach = colours.yellow, land = colours.yellow, dock = colours.yellow,
-  loiter = colours.orange, emergency = colours.red,
-}
+local TABS = { "ships", "map", "log", "nav" }
 
 local function drawShips(w, h)
   local list = roster()
   if #list == 0 then
-    at(1, 3, "No ships are answering.", colours.grey)
-    at(1, 5, ("Channel %d, network '%s'."):format(config.channel, config.protocol),
-       colours.grey)
+    ui.at(2, 3, "No ships are answering.", ui.theme.dim)
+    ui.at(2, 5, ("Channel %d, network '%s'."):format(config.channel,
+          config.protocol), ui.theme.dim)
     return
   end
 
-  local y = 3
-  for _, s in ipairs(list) do
-    if y > h - 1 then break end
+  -- A header row, because six columns of numbers with nothing over them is a
+  -- puzzle rather than a dashboard.
+  ui.fill(1, 2, w, 1, ui.theme.panel)
+  ui.at(2, 2, "ship", ui.theme.bg, ui.theme.panel)
+  ui.at(14, 2, "state", ui.theme.bg, ui.theme.panel)
+  ui.at(24, 2, "  alt", ui.theme.bg, ui.theme.panel)
+  ui.at(31, 2, " spd", ui.theme.bg, ui.theme.panel)
+  if w > 40 then ui.at(37, 2, "doing", ui.theme.bg, ui.theme.panel) end
 
-    local flight = s.tlm.flight or {}
+  fleet.rows = ui.list()
+  for _, ship in ipairs(list) do
+    ui.row(fleet.rows, { ship = ship, click = function()
+      fleet.selected = (fleet.selected == ship.id) and nil or ship.id
+    end })
+  end
 
-    if s.stale then
+  ui.draw(fleet.rows, 1, 3, w, h - 3, function(entry, y)
+    local ship = entry.ship
+    local flight = ship.tlm.flight or {}
+    local chosen = (fleet.selected == ship.id)
+
+    if chosen then ui.fill(1, y, w, 1, colours.blue) end
+    local bg = chosen and colours.blue or ui.theme.bg
+
+    if ship.stale then
       -- Never the last known position drawn as though it were live. A tower
       -- confidently showing a ship where it was a minute ago is worse than one
       -- that admits it has lost it, because somebody will go and look there.
-      at(1, y, fit(s.label, 12), colours.red)
-      at(14, y, "LOST " .. math.floor(now() - (fleet.heard[s.id] or 0)) .. "s",
-         colours.red)
-    else
-      at(1, y, fit(s.label, 12), colours.white)
-      at(14, y, fit(flight.state or "?", 9), STATE_COLOUR[flight.state] or colours.white)
-
-      if s.tlm.alt then
-        at(24, y, ("%5.0fm"):format(s.tlm.alt), colours.lightGrey)
-      end
-      if s.tlm.speed then
-        at(31, y, ("%4.1f"):format(s.tlm.speed), colours.lightGrey)
-      end
-
-      -- The reason, when there is one, is the most useful thing on the line.
-      local why = flight.guard or flight.leg or flight.why
-      if why and w > 40 then
-        at(37, y, fit(why, w - 37),
-           flight.guard and colours.orange or colours.lightGrey)
-      end
+      ui.at(2, y, ui.fit(ship.label, 11, true), ui.theme.bad, bg)
+      ui.at(14, y, ui.fit(("LOST %ds")
+        :format(math.floor(now() - (fleet.heard[ship.id] or 0))), w - 15, true),
+        ui.theme.bad, bg)
+      return
     end
 
-    y = y + 1
-  end
+    ui.at(2, y, ui.fit(ship.label, 11, true), ui.theme.text, bg)
+    ui.at(14, y, ui.fit(flight.state or "?", 9, true),
+          ui.stateColour[flight.state] or ui.theme.text, bg)
+    ui.at(24, y, ("%5s"):format(ui.num(ship.tlm.alt)), ui.theme.dim, bg)
+    ui.at(31, y, ("%4s"):format(ui.num(ship.tlm.speed, "%.1f")), ui.theme.dim, bg)
+
+    if w > 40 then
+      -- The reason, when there is one, is the most useful thing on the line.
+      local why = flight.guard or flight.leg or flight.why
+      ui.at(37, y, ui.fit(why or "-", w - 38, true),
+            flight.guard and ui.guardColour(flight.guard) or ui.theme.dim, bg)
+    end
+  end)
 end
 
 --- A plan view of the fleet and the waypoints.
 --
 -- The one thing a base dashboard can do that a pocket computer cannot: show
--- where everything is at once. Autoscaled to fit whatever is out there, because
--- a fixed scale is either useless at base or useless at range.
+-- where everything is at once. Autoscaled, because a fixed scale is either
+-- useless at base or useless at range.
 local function drawMap(w, h)
-  local top, bottom = 3, h - 1
+  local top, bottom = 2, h - 2
   local points = {}
 
   for _, name in ipairs(nav.names(waypoints())) do
     local wp = waypoints()[name]
-    points[#points + 1] = { x = wp.x, z = wp.z, mark = wp.kind == "pad" and "=" or "+",
-                            colour = colours.lightBlue, label = name }
+    points[#points + 1] = { x = wp.x, z = wp.z,
+                            mark = wp.kind == "pad" and "=" or "+",
+                            colour = ui.theme.cold, label = name }
   end
+
+  -- Eight sectors of heading, which is as much as the character set can show
+  -- honestly. A ship with no heading gets a dot rather than a wrong arrow.
+  local ARROWS = { "v", "\\", "<", "/", "^", "\\", ">", "/" }
 
   for _, s in ipairs(roster()) do
     if not s.stale and s.tlm.pos then
-      points[#points + 1] = { x = s.tlm.pos.x, z = s.tlm.pos.z, mark = "o",
-                              colour = colours.lime, label = s.label }
+      local mark = "o"
+      if s.tlm.heading then
+        mark = ARROWS[(math.floor((s.tlm.heading % 360) / 45 + 0.5) % 8) + 1]
+      end
+      points[#points + 1] = { x = s.tlm.pos.x, z = s.tlm.pos.z, mark = mark,
+                              colour = (fleet.selected == s.id)
+                                and ui.theme.select or ui.theme.ok,
+                              label = s.label, ship = true }
     end
   end
 
   if #points == 0 then
-    at(1, 3, "Nothing to draw yet.", colours.grey)
+    ui.at(2, 3, "Nothing to draw yet.", ui.theme.dim)
     return
   end
 
@@ -219,79 +228,150 @@ local function drawMap(w, h)
     local sy = math.floor((p.z - midZ) / (scale * 2) + lines / 2 + 0.5) + top
 
     if sx >= 1 and sx <= w and sy >= top and sy <= bottom then
-      at(sx, sy, p.mark, p.colour)
-      -- Labelled only when there is room to the right, and never over another
-      -- mark. A map that overwrites the thing you are looking for is worse than
-      -- one with no labels at all.
+      ui.at(sx, sy, p.mark, p.colour)
+      -- Labelled only when there is room to the right. A map that overwrites the
+      -- thing you are looking for is worse than one with no labels.
       if sx + 1 + #p.label <= w then
-        at(sx + 1, sy, fit(p.label, w - sx - 1), colours.grey)
+        ui.at(sx + 1, sy, ui.fit(p.label, w - sx - 1),
+              p.ship and ui.theme.text or ui.theme.dim)
       end
     end
   end
 
-  at(1, bottom + 1, ("%.0fm across   + waypoint  = pad  o ship"):format(spanX),
-     colours.grey)
+  -- North is up, and saying so costs two characters.
+  ui.at(w - 1, top, "N", ui.theme.accent)
+  ui.at(w - 1, top + 1, "^", ui.theme.accent)
+
+  ui.at(1, bottom + 1, ui.fit(("%.0fm across   + point  = pad  ^ ship")
+        :format(spanX), w, true), ui.theme.dim)
 end
 
 local function drawLog(w, h)
   local entries = log.recent(h - 3)
   if #entries == 0 then
-    at(1, 3, "Nothing has happened yet.", colours.grey)
+    ui.at(2, 3, "Nothing has happened yet.", ui.theme.dim)
     return
   end
 
-  local y = 3
+  -- Which causes are routine. Everything else is coloured as a guard, so a
+  -- screen full of ordinary leg changes cannot hide the one diversion in the
+  -- middle of it.
+  local ROUTINE = { arrived = true, fly = true, cleared = true, manual = true,
+                    airborne = true, down = true, docked = true,
+                    ["at altitude"] = true, handback = true }
+
+  local y = 2
   for _, entry in ipairs(entries) do
     if y > h - 1 then break end
-    at(1, y, fit(log.time(entry.at), 5), colours.grey)
-    at(7, y, fit(entry.name or ("ship " .. tostring(entry.ship)), 11), colours.white)
-    at(19, y, fit(("%s > %s"):format(log.value(entry.from), log.value(entry.to)),
-                  w - 19 - 12), colours.lightGrey)
-    at(w - 11, y, fit(entry.why, 11),
-       (entry.why == "bingo" or entry.why == "clearance") and colours.orange
-       or colours.lightGrey)
+    ui.at(1, y, log.time(entry.at), ui.theme.dim)
+    ui.at(7, y, ui.fit(entry.name or ("ship " .. tostring(entry.ship)), 11, true),
+          ui.theme.text)
+    ui.at(19, y, ui.fit(("%s > %s"):format(log.value(entry.from),
+          log.value(entry.to)), math.max(0, w - 19 - 12), true), ui.theme.dim)
+    ui.at(w - 11, y, ui.fit(entry.why, 11, true),
+          ROUTINE[entry.why] and ui.theme.dim or ui.guardColour(entry.why))
     y = y + 1
   end
 end
 
-local TABS = { "ships", "map", "log" }
+--- Waypoints, and which one is home.
+--
+-- The tower owns this table and every ship depends on it, so being able to read
+-- it without a pocket computer in hand is worth a view of its own.
+local function drawNav(w, h)
+  local names = nav.names(waypoints())
+  if #names == 0 then
+    ui.at(2, 3, "No waypoints.", ui.theme.dim)
+    ui.at(2, 5, "Put one down from the pocket computer:", ui.theme.dim)
+    ui.at(2, 6, "the nav tab, + waypoint here.", ui.theme.dim)
+    return
+  end
+
+  ui.fill(1, 2, w, 1, ui.theme.panel)
+  ui.at(2, 2, "waypoint", ui.theme.bg, ui.theme.panel)
+  ui.at(16, 2, "kind", ui.theme.bg, ui.theme.panel)
+  ui.at(23, 2, "position", ui.theme.bg, ui.theme.panel)
+
+  local y = 3
+  for _, name in ipairs(names) do
+    if y > h - 1 then break end
+    local wp = waypoints()[name]
+    local home = (state.data.home == name)
+
+    ui.at(2, y, ui.fit((home and "*" or " ") .. name, 13, true),
+          home and ui.theme.ok or ui.theme.text)
+    ui.at(16, y, ui.fit(wp.kind or "point", 6, true), ui.theme.dim)
+    ui.at(23, y, ui.fit(("%d %d %d"):format(wp.x, wp.y or 0, wp.z), w - 24, true),
+          ui.theme.dim)
+    y = y + 1
+  end
+end
 
 local function render()
   local w, h = term.getSize()
 
-  colour(colours.white, colours.black)
+  ui.paint(ui.theme.text, ui.theme.bg)
   term.clear()
 
-  colour(colours.black, colours.cyan)
-  term.setCursorPos(1, 1)
-  term.clearLine()
   local flying = 0
   for _, s in ipairs(roster()) do
     if not s.stale and s.tlm.flight and s.tlm.flight.state ~= "idle" then
       flying = flying + 1
     end
   end
-  term.write(fit((" AERO  %d ships, %d flying"):format(#roster(), flying), w - 18))
 
-  local x = w - 17
-  for _, name in ipairs(TABS) do
-    colour(fleet.screen == name and colours.white or colours.black, colours.cyan)
-    term.setCursorPos(x, 1)
-    term.write(" " .. name .. " ")
-    x = x + #name + 2
+  -- The header is the alarm as well as the title. If anything out there is on a
+  -- guard the whole bar turns that colour, so the tower is readable across a
+  -- room before anybody has read a word of it.
+  local alarm = nil
+  for _, s in ipairs(roster()) do
+    if s.stale then
+      alarm = alarm or "lost"
+    elseif s.tlm.flight and s.tlm.flight.guard then
+      alarm = s.tlm.flight.guard
+    end
   end
 
-  colour(colours.white, colours.black)
+  local banner = alarm and ui.guardColour(alarm) or ui.theme.accent
+  ui.fill(1, 1, w, 1, banner)
+
+  -- The alarm goes **first**, not after the title. There are twenty-four columns
+  -- of tabs on the right of this bar, so the header is cut at about half the
+  -- screen -- and appending the guard to a title meant the one word worth
+  -- shouting was the one word that got trimmed off the end.
+  local headline = alarm
+    and ("%s  %d ships"):format(alarm:upper(), #roster())
+    or ("AERO  %d ships, %d flying"):format(#roster(), flying)
+
+  ui.at(2, 1, ui.fit(headline, math.max(0, w - 27)), ui.theme.bg, banner)
+
+  -- Tabs sit in the header on the tower: the bottom row is the status line and
+  -- the screen is wide enough for both.
+  local layout = ui.tabLayout(TABS, 24)
+  fleet.tabs = {}
+  for _, tab in ipairs(layout) do
+    local on = (fleet.screen == tab.name)
+    local x = w - 24 + tab.x - 1
+    fleet.tabs[#fleet.tabs + 1] = { name = tab.name, x = x, w = tab.w }
+    if on then ui.fill(x, 1, tab.w, 1, ui.theme.bg) end
+    ui.at(x, 1, ui.centre(tab.name, tab.w),
+          on and ui.theme.select or ui.theme.bg,
+          on and ui.theme.bg or banner)
+  end
+
+  ui.paint(ui.theme.text, ui.theme.bg)
 
   if fleet.screen == "ships" then drawShips(w, h)
   elseif fleet.screen == "map" then drawMap(w, h)
+  elseif fleet.screen == "nav" then drawNav(w, h)
   else drawLog(w, h) end
 
   if fleet.note then
-    at(1, h, fit(fleet.note, w), colours.yellow)
+    ui.at(1, h, ui.fit(fleet.note, w, true), ui.theme.select, ui.theme.bg)
   else
-    at(1, h, fit("Tab: view   Q: quit   " .. (state.data.home
-        and ("home " .. state.data.home) or "no home set"), w), colours.grey)
+    ui.at(1, h, ui.fit(("Tab: view   Q: quit   %s"):format(state.data.home
+          and ("home " .. state.data.home) or "no home set"), w, true),
+          ui.theme.dim, ui.theme.bg)
   end
 end
 
@@ -497,9 +577,9 @@ term.clear()
 term.setCursorPos(1, 1)
 
 if not net.open() then
-  colour(colours.red)
+  ui.paint(ui.theme.bad, ui.theme.bg)
   print("No wireless modem. A tower with no radio is a chair.")
-  colour(colours.white)
+  ui.paint(ui.theme.text, ui.theme.bg)
   return
 end
 
@@ -508,10 +588,10 @@ end
 net.broadcast({ type = "server?" })
 local answered = select(2, net.receive(2))
 if type(answered) == "table" and answered.type == "server!" then
-  colour(colours.yellow)
+  ui.paint(ui.theme.warn, ui.theme.bg)
   print("Another tower is already up on this network.")
   print("Standing down.")
-  colour(colours.white)
+  ui.paint(ui.theme.text, ui.theme.bg)
   return
 end
 
@@ -551,10 +631,39 @@ while true do
     end
 
   elseif event == "mouse_click" or event == "monitor_touch" then
-    -- The header carries the tabs, so tapping it cycles the view. On a monitor
-    -- that is the only input there is.
-    fleet.screen = TABS[(({ ships = 1, map = 2, log = 3 })[fleet.screen] % #TABS) + 1]
+    -- b, c are the column and row for a mouse_click; a monitor_touch puts the
+    -- side in `a` and the coordinates in the same two places, so one branch
+    -- serves both.
+    local x, y = b, c
+    if event == "monitor_touch" then x, y = b, c end
+
+    if y == 1 then
+      -- The header. Tapping a tab picks it; tapping anywhere else on the bar
+      -- cycles, which is the only gesture a monitor without a keyboard has.
+      local picked = nil
+      for _, tab in ipairs(fleet.tabs) do
+        if x >= tab.x and x < tab.x + tab.w then picked = tab.name end
+      end
+
+      if picked then
+        fleet.screen = picked
+      else
+        local index = 1
+        for i, name in ipairs(TABS) do if name == fleet.screen then index = i end end
+        fleet.screen = TABS[(index % #TABS) + 1]
+      end
+
+    elseif fleet.screen == "ships" and fleet.rows then
+      ui.click(fleet.rows, y)
+    end
+
     redraw()
+
+  elseif event == "mouse_scroll" then
+    if fleet.rows then
+      fleet.rows.scroll = fleet.rows.scroll + a
+      redraw()
+    end
 
   elseif event == "term_resize" or event == "monitor_resize" then
     W, H = term.getSize()
@@ -570,5 +679,5 @@ state.flush(now())
 
 term.clear()
 term.setCursorPos(1, 1)
-colour(colours.white)
+ui.paint(ui.theme.text, ui.theme.bg)
 print("Tower closed. Every ship carries on by itself.")

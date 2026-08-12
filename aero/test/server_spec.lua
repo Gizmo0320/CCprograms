@@ -309,6 +309,60 @@ do
 end
 
 --------------------------------------------------------------------------------
+section("the dashboard")
+--------------------------------------------------------------------------------
+
+do
+  -- The header is the alarm as well as the title. A tower with a ship on a
+  -- guard should be readable across a room before anybody has read a word.
+  local r = runServer{
+    script = {
+      frame(SHIP, { type = "tlm", label = "Kestrel", alt = 120,
+                    pos = { x = 0, y = 120, z = 40 },
+                    flight = { state = "cruise", guard = "clearance" } }),
+      { "aero_test_snap" },
+    },
+  }
+  check(onScreen(r.screens[1], "CLEARANCE"),
+        "a ship on a guard is shouted about in the header",
+        r.screens[1] and r.screens[1][1])
+
+  -- The map is the one thing a tower can do that a pocket cannot: everything at
+  -- once, with north up and a scale.
+  local mapped = runServer{
+    state = { waypoints = { base = { name = "base", x = 0, y = 64, z = 0,
+                                     kind = "pad" } },
+              routes = {}, log = {}, home = "base" },
+    script = {
+      frame(SHIP, { type = "tlm", label = "Kestrel", pos = { x = 40, y = 120, z = 40 },
+                    heading = 90, flight = { state = "cruise" } }),
+      { "mouse_click", 1, 30, 1 },      -- the header cycles the view
+      { "aero_test_snap" },
+    },
+  }
+  local anyMap = false
+  for _, line in ipairs(mapped.screens[1] or {}) do
+    if tostring(line):find("across", 1, true) then anyMap = true end
+  end
+  check(anyMap or onScreen(mapped.screens[1], "base"),
+        "the header cycles to a view that draws the world")
+
+  -- The waypoint table lives here and every ship depends on it, so reading it
+  -- without a pocket computer in hand is worth a view.
+  local navView = runServer{
+    state = { waypoints = { quarry = { name = "quarry", x = 10, y = 70, z = 300,
+                                       kind = "point" } },
+              routes = {}, log = {}, home = nil },
+    script = {
+      { "key", keys.tab }, { "key", keys.tab }, { "key", keys.tab },
+      { "aero_test_snap" },
+    },
+  }
+  check(onScreen(navView.screens[1], "quarry"),
+        "and the waypoints can be read from the tower itself")
+end
+
+--------------------------------------------------------------------------------
 section("the log")
 --------------------------------------------------------------------------------
 

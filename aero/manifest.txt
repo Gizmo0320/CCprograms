@@ -28,4 +28,5 @@ lib/instruments.lua
 lib/autopilot.lua
 lib/nav.lua
 lib/sable.lua
+lib/ui.lua
 lib/flight.lua

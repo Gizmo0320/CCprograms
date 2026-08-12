@@ -37,6 +37,7 @@ local instruments = require("lib.instruments")
 local autopilot   = require("lib.autopilot")
 local nav         = require("lib.nav")
 local flight      = require("lib.flight")
+local ui          = require("lib.ui")
 
 local pilot = {
   fix       = instruments.blank(),
@@ -62,76 +63,150 @@ local function label()
 end
 
 --------------------------------------------------------------------------------
--- Screen
+-- The cockpit
 --------------------------------------------------------------------------------
 
--- A pilot has no UI worth the name -- nobody is standing at this computer while
--- the ship is flying, and the pocket computer is where you look. What it does
--- have is enough on screen to answer "is this thing alive" when you climb up to
--- it, which is a different question from the one the dashboard answers.
+-- Nobody is standing at this computer while the ship is flying -- the pocket is
+-- where you look from the ground. What this is for is the moment you climb up to
+-- a ship that is sitting somewhere it should not be, and want to know what it
+-- thinks is going on. So it is an instrument panel rather than a log: the state,
+-- what it is being told to do, and every reading that could explain the
+-- difference.
+--
+-- Laid out for a 51x19 computer and folded down to a 26x20 pocket. Colour is
+-- used to say things a glance can catch -- red guard, orange loiter -- and never
+-- to say something the text does not.
 
-local function colour(fg, bg)
-  if term.isColour and term.isColour() then
-    if fg then term.setTextColour(fg) end
-    if bg then term.setBackgroundColour(bg) end
+local function cockpitWide(w, h)
+  local fix = pilot.fix
+  local goal = pilot.fl.goal or {}
+  local leg = nav.current(pilot.fl.plan)
+
+  -- Left: the artificial horizon, which is the only instrument here that is
+  -- read as a picture rather than a number.
+  ui.panel(1, 2, 17, 8, "attitude", ui.theme.panel)
+  ui.horizon(1, 3, 17, 7, fix.pitch, fix.roll)
+
+  ui.at(1, 10, ui.fit(("tilt %s  spin %s")
+    :format(ui.num(fix.tilt), ui.num(fix.spin)), 17, true),
+    (fix.tilt and fix.tilt > 25) and ui.theme.bad or ui.theme.dim)
+
+  -- Middle: altitude tape, with the target marked.
+  ui.panel(19, 2, 11, 8, "alt", ui.theme.panel)
+  local rows = ui.tapeRows(fix.alt, 7, 10)
+  for i, row in ipairs(rows) do
+    local target = goal.alt
+    local marked = target and math.abs(row.value - target) < 5
+    ui.at(20, 2 + i,
+          ui.fit(("%s%5d"):format(row.here and ">" or (marked and "*" or " "),
+                                  row.value), 9, true),
+          row.here and ui.theme.select or (marked and ui.theme.ok or ui.theme.dim))
   end
+
+  ui.at(19, 10, ui.fit(("vs %s"):format(ui.num(fix.vs, "%+.1f")), 11, true),
+        ui.theme.dim)
+
+  -- Right: everything that is a number and nothing else.
+  ui.panel(31, 2, w - 30, 8, "flight", ui.theme.panel)
+
+  local right = {
+    { "state", pilot.fl.state, ui.stateColour[pilot.fl.state] or ui.theme.text },
+    { "why", tostring(pilot.fl.why), ui.theme.dim },
+    { "speed", ("%.1f / %s"):format(fix.speed or 0, ui.num(goal.speed)), ui.theme.text },
+    { "hdg", ("%s / %s"):format(ui.num(fix.heading), ui.num(goal.heading)), ui.theme.text },
+    { "clear", ui.num(fix.clearance), ui.theme.text },
+    { "ahead", ui.num(fix.ahead), fix.ahead and ui.theme.warn or ui.theme.dim },
+    { "leg", leg and ("%s %sm"):format(leg.name, ui.num(nav.distance(fix, leg)))
+             or "-", ui.theme.text },
+  }
+
+  for i, entry in ipairs(right) do
+    if 2 + i > 9 then break end
+    ui.at(32, 2 + i, ui.fit(entry[1], 6, true), ui.theme.dim)
+    ui.at(38, 2 + i, ui.fit(entry[2], w - 38, true), entry[3])
+  end
+
+  return 11
+end
+
+local function cockpitNarrow(w, h)
+  local fix = pilot.fix
+  local goal = pilot.fl.goal or {}
+
+  ui.at(1, 2, ui.fit(("alt %s / %s"):format(ui.num(fix.alt), ui.num(goal.alt)),
+        w, true), ui.theme.text)
+  ui.at(1, 3, ui.fit(("vs  %s   tilt %s"):format(ui.num(fix.vs, "%+.1f"),
+        ui.num(fix.tilt)), w, true), ui.theme.dim)
+  ui.at(1, 4, ui.fit(("hdg %s / %s"):format(ui.num(fix.heading),
+        ui.num(goal.heading)), w, true), ui.theme.text)
+  ui.at(1, 5, ui.fit(("spd %s   ahead %s"):format(ui.num(fix.speed, "%.1f"),
+        ui.num(fix.ahead)), w, true), ui.theme.dim)
+  ui.at(1, 6, ui.compassStrip(fix.heading, w), ui.theme.accent)
+
+  return 8
 end
 
 local function redraw()
   local w, h = term.getSize()
-  colour(colours.white, colours.black)
+  local fix = pilot.fix
+
+  ui.paint(ui.theme.text, ui.theme.bg)
   term.clear()
 
-  colour(colours.black, term.isColour and term.isColour() and colours.cyan or colours.white)
-  term.setCursorPos(1, 1)
-  term.clearLine()
-  term.write((" %s  %s"):format(label(), pilot.fl.state):sub(1, w))
+  -- The header says the two things worth knowing from across a room: which ship
+  -- this is, and whether it is flying itself.
+  local banner = pilot.fl.guard and ui.guardColour(pilot.fl.guard)
+    or (ui.stateColour[pilot.fl.state] or ui.theme.accent)
+  ui.fill(1, 1, w, 1, banner)
+  ui.at(1, 1, ui.fit((" %s  %s%s"):format(label(), pilot.fl.state,
+        pilot.fl.guard and ("  " .. pilot.fl.guard:upper()) or ""), w, true),
+        ui.theme.bg, banner)
 
-  colour(colours.white, colours.black)
+  local y = (w >= 44) and cockpitWide(w, h) or cockpitNarrow(w, h)
 
-  local fix = pilot.fix
-  local lines = {
-    ("alt %s  vs %s"):format(
-      fix.alt and ("%.0f"):format(fix.alt) or "--",
-      fix.vs and ("%+.1f"):format(fix.vs) or "--"),
-    ("hdg %s  spd %s"):format(
-      fix.heading and ("%.0f"):format(fix.heading) or "--",
-      ("%.1f"):format(fix.speed or 0)),
-    ("pos %s"):format(fix.x and ("%.0f %.0f %.0f"):format(fix.x, fix.y or 0, fix.z) or "--"),
-    ("fix %s"):format(instruments.age(fix, now())),
-    ("tilt %s%s"):format(
-      fix.tilt and ("%.0f"):format(fix.tilt) or "--",
-      fix.spin and (("  spin %.0f"):format(fix.spin)) or ""),
-    ("why %s"):format(tostring(pilot.fl.why)),
-  }
-
-  local leg = nav.current(pilot.fl.plan)
-  if leg then
-    lines[#lines + 1] = ("leg %s %.0fm"):format(leg.name, nav.distance(fix, leg) or 0)
-  end
-  if pilot.fl.guard then
-    lines[#lines + 1] = "GUARD " .. pilot.fl.guard
-  end
-
-  -- Only the signals that are actually saying something. A list of six inputs
-  -- all reading off is a screen full of nothing, and this screen exists to
-  -- answer "is this thing alive" from a ladder.
-  local live = {}
-  for _, s in ipairs(hull.inputs) do
-    local v = fix.signals and fix.signals[s.name]
-    if v == true then live[#live + 1] = s.name
-    elseif type(v) == "number" and v > 0 then
-      live[#live + 1] = ("%s=%d"):format(s.name, v)
+  -- Controls, as bars. What the autopilot is actually asking the hull for is
+  -- the one thing that is invisible from outside and explains most of the
+  -- surprises -- a ship sitting on the ground with the lift bearing at full is
+  -- a different problem from one with it at nothing.
+  for _, name in ipairs(hull.order) do
+    if y > h - 1 then break end
+    local held = hull.current[name] or {}
+    local value = held.throttle or held.signal or held.left
+    if value ~= nil then
+      ui.bar(1, y, math.min(w, 24), value, 0, 1, ui.theme.ok,
+             (" %s %3d%%"):format(ui.fit(name, 8, true), value * 100))
+      y = y + 1
     end
   end
-  if #live > 0 then lines[#lines + 1] = "rs  " .. table.concat(live, " ") end
-  for _, why in ipairs(hull.problems) do lines[#lines + 1] = why end
 
-  for i, line in ipairs(lines) do
-    if i + 1 > h then break end
-    term.setCursorPos(1, i + 1)
-    term.write(line:sub(1, w))
+  -- Fuel, when the hull reports any.
+  if fix.capacity and fix.capacity > 0 and y <= h - 1 then
+    local low = fix.burn and fix.burn < 120
+    ui.bar(1, y, math.min(w, 24), fix.fuel, 0, fix.capacity,
+           low and ui.theme.bad or ui.theme.cold,
+           (" fuel %ss"):format(ui.num(fix.burn)))
+    y = y + 1
   end
+
+  -- The bottom line is the fix, because everything above it is worthless if the
+  -- ship does not know where it is.
+  local source = instruments.age(fix, now())
+  ui.at(1, h, ui.fit((" %s  %s%s"):format(source,
+        fix.x and ("%d %d %d"):format(fix.x, fix.y or 0, fix.z) or "no position",
+        fix.assembled and "" or "  UNASSEMBLED"), w, true),
+        fix.usable and ui.theme.dim or ui.theme.bad,
+        ui.theme.bg)
+
+  -- Anything actually wrong goes over the top of the panel, because a warning
+  -- nobody sees is not a warning.
+  local rowY = h - 1
+  for _, why in ipairs(hull.problems) do
+    if rowY <= y then break end
+    ui.at(1, rowY, ui.fit(why, w, true), ui.theme.warn, ui.theme.bg)
+    rowY = rowY - 1
+  end
+
+  ui.paint(ui.theme.text, ui.theme.bg)
 end
 
 --------------------------------------------------------------------------------
@@ -509,7 +584,7 @@ state.flush(now())
 net.broadcast({ type = "tlm", label = label(), gone = true })
 
 term.setCursorPos(1, 1)
-colour(colours.white, colours.black)
+ui.paint(ui.theme.text, ui.theme.bg)
 term.clear()
 
 if not ok then

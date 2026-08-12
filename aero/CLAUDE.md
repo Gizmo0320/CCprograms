@@ -380,6 +380,38 @@ the ship is facing. `test/mockperipheral.lua` composes the quaternion from the
 ship's angles longhand rather than sharing the code, so a disagreement between
 the two is a test failure and not a shared mistake.
 
+### The interface
+
+`lib/ui.lua` is a deliberate departure from the other two suites, which
+redeclare `colour`, `at` and `fit` in every file and say so — at four lines each
+that is cheaper than a dependency. This one has gauges, a compass, an artificial
+horizon, a scrolling row list and tabs, and three copies of those would drift
+apart within a week. Broken once, with a note in the file.
+
+Three constraints shape it. It must survive **26x20**, so everything takes a
+width and cuts to it. It must survive **no colour**, because a ship's flight
+computer may be a basic computer — `ui.paint` is a no-op there and nothing is
+drawn in a way that only reads as different because it is a different colour. And
+it must survive **being redirected**, since the tower draws the same screen to
+its terminal and a monitor, so nothing caches the terminal or its size.
+
+Pure layout arithmetic — `fit`, `ratio`, `tapeRows`, `horizonRows`, `tabLayout`,
+`tabAt` — is separated from anything that draws, because it is the part with the
+off-by-ones and the part a test can check without a screen. `tabLayout` and
+`tabAt` share one function so where a tab is drawn and what a click at a column
+means cannot disagree.
+
+`ui.stateColour` and `ui.guardColour` live here rather than in each program, so
+the tower, the pocket and the ship cannot mean different things by orange.
+
+The row list from `redstone/remote.lua` is lifted into `ui.list`/`ui.row`/
+`ui.draw`/`ui.click` and now carries the **column** as well, because two rows
+have two gestures on one line — a stepper's minus and plus, and delete at the far
+right. Rebuilding the list every draw and letting each row carry its own handler
+is what stops a click landing on the button next to the one it looks like; the
+remote suite has a case for exactly that, after picking a ship added a row and
+shifted every action below it.
+
 ### State persistence
 
 Two files, deliberately separate:

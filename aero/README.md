@@ -341,9 +341,58 @@ Terms **add**, so two bearings can share the lift:
 { demand = "forward", control = "wheels", as = "right" },
 ```
 
+## The screens
+
+Three programs, one look. Colour means the same thing on all of them — a state
+that read "loiter" in one colour on the tower and another on the pocket would be
+worse than no colour at all — and everything degrades: to 26x20 on a pocket, and
+to a **basic computer with no colour**, which a ship's flight computer may well
+be.
+
+### The ship
+
+`pilot.lua` draws an instrument panel, not a log. Nobody is standing at this
+computer while the ship is flying; what it is for is the moment you climb up to
+one sitting somewhere it should not be and want to know what it thinks is going
+on.
+
+- An **artificial horizon** from pitch and roll, with tilt and spin under it
+- An **altitude tape** with the commanded altitude marked on it
+- State, why, speed, heading, clearance, what is ahead, the current leg
+- A **bar per control** showing what the autopilot is actually asking the hull
+  for — the one thing invisible from outside, and the thing that explains most
+  surprises. A ship on the ground with the lift bearing at full is a different
+  problem from one with it at nothing.
+- Fuel, with burn time
+- The fix source along the bottom, because everything above it is worthless if
+  the ship does not know where it is
+
+The header bar turns the colour of whatever guard is firing, so a ship in
+trouble is obvious from the ladder.
+
+On a narrow screen the horizon and the tape give way to a compass strip and the
+numbers. Nothing is only distinguishable by colour.
+
+### The tower
+
+`server.lua` draws four views, cycled with Tab or by tapping a tab in the
+header, on its own terminal and on any attached monitor.
+
+- **ships** — the roster, colour-coded by state, with the reason for whatever
+  each one is doing. Click one to pick it out; it is highlighted on the map too.
+- **map** — everything at once, autoscaled, north up, each ship an arrow showing
+  its heading and each waypoint marked by kind.
+- **log** — coloured by cause, so a screen of routine leg changes cannot hide
+  the one diversion in the middle of it.
+- **nav** — the waypoint table and which one is home, readable without a pocket
+  computer in your hand.
+
+The header is the alarm as well as the title: if any ship is on a guard the
+whole bar turns that colour and leads with the reason.
+
 ## Flying
 
-On the pocket computer, four tabs along the bottom.
+On the pocket computer, four tabs along the bottom, plus a panel for one ship.
 
 **fleet** — every ship, what it is doing, how high. Tap one to select it; tap it
 again to go back to commanding the whole fleet. Then:
@@ -371,6 +420,40 @@ holds there — the ship does not put itself down in a field because the list ra
 out.
 
 **log** — what happened and why.
+
+### One ship's panel
+
+Pick a ship on the **fleet** tab and `SHIP` opens its own screen. This is where
+everything that belongs to one ship rather than to the fleet lives, and all of it
+was previously reachable in the protocol and by nothing a thumb could press:
+
+- **Gauges** — altitude against the commanded altitude, fuel against the tank,
+  and the readings that explain a ship not doing what you expected: vertical
+  speed, tilt, fix source, and the active guard.
+- **The hull** — every control, its kind, and whether it is answering. The
+  quickest way to find out that the bearing you thought was lift is not attached
+  is to look at this list; the pocket has no `/craft.cfg` of its own and learns
+  by asking.
+- **Gains** — `hover`, `altP`, `vsP`, `vsI`, `hdgP`, `spdP`, each with a minus
+  and a plus. A tap moves the gain by a tenth of itself, so one control works for
+  a gain of 0.5 and one of 0.015 without you having to know which is which, and
+  never below zero. **This is the tuning loop**: reinstalling to try 0.4 instead
+  of 0.35 is not one anybody will use, so it happens from the thing in your hand
+  while the ship is in the air in front of you.
+
+### Routes
+
+Build a route on the **fly** tab and `SAVE as...` keeps it on the tower. Saved
+routes appear above the waypoint list, and tapping one loads its legs and its
+altitude — so a run you fly every day is two taps.
+
+### Deleting
+
+On the **nav** tab, tapping a waypoint's name makes it home; tapping the `x` in
+the last column deletes it. Two gestures on one row, because deleting is the more
+dangerous of the two and should not be what happens when you tap a list you were
+reading. Home cannot be deleted at all — a ship already out there is relying on
+it.
 
 ## Guards
 
@@ -485,13 +568,13 @@ Results are written to `/test-summary.txt` and `/test-*-results.txt` on the
 emulated computer rather than stdout, because headless mode redraws the entire
 terminal on every update.
 
-521 assertions. `spec.lua` covers each module on its own — the heading
+612 assertions. `spec.lua` covers each module on its own — the heading
 arithmetic and the wrap, plans and legs, sensor fusion and the ageing of a
 dead-reckoned fix, the PID loops and the integral clamp, every flight state and
 all four guards, the hull abstraction over a mock of the real peripheral API, the
 redstone layer over both a computer's own bus and a relay in all three signal
-shapes, `probe.lua` round-tripped through the craft file it generates, the
-bounded log, the debounced state write, and the manifest against the tree. Three
+shapes, the quaternion attitude maths, the UI's layout arithmetic, `probe.lua`
+round-tripped through the craft file it generates, the bounded log, the debounced state write, and the manifest against the tree. Three
 more drive the real event loops of `pilot.lua`, `server.lua` and `remote.lua`,
 and one drives `install.lua`.
 
