@@ -68,6 +68,29 @@ Every method named here is real.
 | `optical_sensor` | `hasHit()`, `getDistance()`, `getBlock()`, `setRange(n)` |
 | `docking_connector` | `getConnectedName()` |
 | `analogue_joystick` | `getTilt()` → `{x, z, magnitude, held, active}` |
+| `directional_link` | `getClosestAngle()` — bearing to the nearest matching link |
+| `modulating_link` | `getClosestDistance()` — and its range |
+| `name_plate` | `getName()` / `setName(s)` |
+| `swivel_bearing` | `getTargetAngle()` |
+
+Every type string above is the one the peripheral class's own `getType()`
+returns, checked against the source rather than inferred from the block's name —
+they are not always the same word, and a role that auto-finds nothing is a silent
+instrument rather than an error.
+
+Two are deliberately unused, listed here so that is a decision rather than an
+oversight: `torsion_spring` (`getAngle`, `setLimit`, `isRunning`) is an actuator
+whose effect on a hull in flight this program cannot guess at, and
+`linked_typewriter` (`getPressedKeyCodes`, and it attaches to the computer) is a
+cockpit keyboard — a manual flying mode, which is a different program.
+
+The two linked receivers are a homing beacon between them, and are **reported
+but never navigated on**: `getAngleToClosestLink` is an angle, and nothing
+available outside the game says whether it is measured from world north or from
+the receiver's own facing. Those differ by the ship's heading, which is precisely
+the error that would send a ship past its pad. It goes in the telemetry frame so
+the convention can be established by watching it, and steers nothing until it has
+been.
 
 **Actuators** — all from Gadgets & Gizmos:
 

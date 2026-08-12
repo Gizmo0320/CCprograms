@@ -223,13 +223,56 @@ limits = { cruise = 8, climb = 2, descend = 2, clearance = 8 },
 Multiple burners or vents can fill one balloon and their volumes combine, so give
 each its own `wire` control and its own `lift` mix term — the terms add.
 
+## Instruments
+
+Every one of these is found automatically by type, so naming it in
+`instruments` is only necessary when you have two — or when you want the file to
+be a description of the ship rather than a list of overrides. Set one to `false`
+to say "this hull has none, stop looking and stop warning".
+
+| Role | Peripheral | Gives |
+| --- | --- | --- |
+| `nav` | `navigation_table` | position and heading. Without it the ship can hover but not navigate |
+| `alt` | `altitude_sensor` | height. Without it *and* `nav`, the pilot hands the hull back |
+| `vel` | `velocity_sensor` | speed, as a cross-check on the differentiated figure |
+| `gimbal` | `gimbal_sensor` | pitch and roll, as real angles |
+| `ground` | `optical_sensor` | clearance. No sensor means no terrain guard |
+| `dock` | `docking_connector` | what the ship is docked to |
+| `stick` | `analogue_joystick` | the pilot's hands |
+| `link` | `advanced_data_link` | a live target position |
+| `beacon` | `directional_link` | bearing to the nearest matching link |
+| `range` | `modulating_link` | distance to the nearest matching link |
+| `plate` | `name_plate` | the ship's name, on a block you can read from outside |
+| `swivel` | `swivel_bearing` | where a swivel bearing is pointing |
+
+Renaming a ship from the pocket computer writes the **nameplate** as well as the
+computer's label, so the name is visible from the ground rather than only on the
+dashboard.
+
+The two **linked receivers** together are a homing beacon: bearing and range to
+the nearest matching link. They are reported in the telemetry and nothing steers
+on them, deliberately — `getClosestAngle` is an angle, and I have not been able
+to confirm whether it is measured from world north or from the receiver's own
+facing. Those differ by the ship's heading, which is exactly the error that sends
+a ship confidently past its pad. Watch it against a known bearing, tell me which
+it is, and it can become a real approach aid.
+
+Two peripherals are deliberately unused. `torsion_spring` (`getAngle`,
+`setLimit`, `isRunning`) is an actuator, but what a limit does to a hull in
+flight is not something this program can guess. `linked_typewriter`
+(`getPressedKeyCodes`) is a cockpit keyboard — a manual flying mode, which is a
+different program from this one.
+
 ## Tilt
 
 The [gimbal sensor](https://createaeronautics.miraheze.org/wiki/Gimbal_sensor)
-"outputs redstone signals based on which side is leaning downwards", with a
-separate sensitivity for each axis. If you have the Gadgets & Gizmos peripheral
-it is read directly and you need nothing here. If you are reading the block over
-redstone, name the four faces:
+has a peripheral — `gimbal_sensor`, with `getAngles()` returning real degrees —
+and if you have it, tilt is read directly and you need nothing below.
+
+The block *also* "outputs redstone signals based on which side is leaning
+downwards", with a separate sensitivity per axis, which is the only way to read
+it without the Gadgets & Gizmos compatibility layer. To do it that way, name the
+four faces:
 
 ```lua
 tilt = {
@@ -398,7 +441,7 @@ Results are written to `/test-summary.txt` and `/test-*-results.txt` on the
 emulated computer rather than stdout, because headless mode redraws the entire
 terminal on every update.
 
-417 assertions. `spec.lua` covers each module on its own — the heading
+439 assertions. `spec.lua` covers each module on its own — the heading
 arithmetic and the wrap, plans and legs, sensor fusion and the ageing of a
 dead-reckoned fix, the PID loops and the integral clamp, every flight state and
 all four guards, the hull abstraction over a mock of the real peripheral API, the

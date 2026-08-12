@@ -159,6 +159,10 @@ end
 -- Instrument roles and the peripheral types that can fill them. A role may be
 -- filled by more than one type because the base mod and the Gadgets & Gizmos
 -- compatibility layer expose some of the same blocks under different names.
+--
+-- Every type string here is from the peripheral class's own getType(), not
+-- inferred from the block name -- the two are not always the same word, and a
+-- role that auto-finds nothing is a silent instrument rather than an error.
 local ROLES = {
   nav    = { navigation_table = true },
   alt    = { altitude_sensor = true },
@@ -168,7 +172,31 @@ local ROLES = {
   dock   = { docking_connector = true },
   stick  = { analogue_joystick = true },
   link   = { advanced_data_link = true },
+
+  -- A linked receiver pair, which between them give bearing and distance to the
+  -- nearest matching link: a homing beacon. Reported, not flown on -- see `read`.
+  beacon = { directional_link = true },
+  range  = { modulating_link = true },
+
+  -- The ship's name on a physical block, so it is readable from outside as well
+  -- as on the dashboard.
+  plate  = { name_plate = true },
+
+  -- Where a swivel bearing has been told to point. Read-only: the peripheral
+  -- exposes getTargetAngle and nothing that sets it.
+  swivel = { swivel_bearing = true },
 }
+
+-- Deliberately not wired up, and listed so that is a decision rather than an
+-- oversight:
+--
+--   torsion_spring     getAngle / setLimit / isRunning. An actuator, but what a
+--                      limit does to a hull in flight is not something this file
+--                      can guess at, and guessing would mean a control that
+--                      moves something nobody asked it to move.
+--   linked_typewriter  getPressedKeyCodes, and it attaches to the computer. A
+--                      cockpit keyboard -- a manual flying mode rather than an
+--                      instrument, and a different program from this one.
 
 --------------------------------------------------------------------------------
 -- Talking to the mod
@@ -929,6 +957,28 @@ function hull.read(now)
     if type(docked) == "string" and docked ~= "" then raw.docked = docked end
   end
 
+  -- The homing beacon: bearing from a directional link, range from a modulating
+  -- one. Both are relative to the nearest matching link rather than to anywhere
+  -- in the world.
+  --
+  -- **Reported, never navigated on.** getAngleToClosestLink is an angle, and
+  -- nothing available from outside the game says whether it is measured from
+  -- world north or from the receiver's own facing. Those two differ by the
+  -- ship's heading, which is precisely the error that would send a ship
+  -- confidently past its pad -- so it goes in the telemetry frame, where you can
+  -- watch it against a known bearing and find out, and nothing steers on it
+  -- until someone has.
+  if inst.beacon then
+    raw.beacon = tonumber((call("beacon", inst.beacon.side, "getClosestAngle")))
+  end
+  if inst.range then
+    raw.beaconRange = tonumber((call("range", inst.range.side, "getClosestDistance")))
+  end
+
+  if inst.swivel then
+    raw.swivel = tonumber((call("swivel", inst.swivel.side, "getTargetAngle")))
+  end
+
   if inst.stick then
     local tilt = call("stick", inst.stick.side, "getTilt")
     if type(tilt) == "table" then
@@ -1214,6 +1264,37 @@ function hull.apply(demands, dt)
   end
 
   return applied
+end
+
+--------------------------------------------------------------------------------
+-- The nameplate
+--------------------------------------------------------------------------------
+
+--- What the nameplate on the hull says, or nil.
+--
+-- Not read every sweep: it is a name, and it changes when somebody changes it.
+function hull.plateName()
+  local plate = hull.instruments.plate
+  if not plate then return nil end
+
+  local name = call("plate", plate.side, "getName")
+  if type(name) ~= "string" or name == "" then return nil end
+  return name
+end
+
+--- Write the ship's name onto the nameplate.
+--
+-- The computer's label is the name everything else uses -- it survives updates,
+-- reboots and being broken and replaced, and CC's own `label` program can read
+-- it. The plate is the same name made visible from outside, which is the only
+-- place it is any use while you are standing on the ground watching the thing
+-- come in.
+function hull.setPlateName(name)
+  local plate = hull.instruments.plate
+  if not plate then return false end
+
+  local _, failed = call("plate", plate.side, "setName", tostring(name))
+  return not failed
 end
 
 --------------------------------------------------------------------------------

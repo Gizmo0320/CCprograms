@@ -352,6 +352,42 @@ function mock.new(opts)
     return d
   end
 
+  --- A directional linked receiver: bearing to the nearest matching link.
+  function world.beacon(side, opts2)
+    local d = world.add(side, "directional_link", { angle = (opts2 or {}).angle or 0 })
+    d.methods = {
+      getClosestAngle = function() return d.angle end,
+      getClosestAngleRad = function() return math.rad(d.angle) end,
+    }
+    return d
+  end
+
+  --- A modulating linked receiver: distance to the nearest matching link.
+  function world.beaconRange(side, opts2)
+    local d = world.add(side, "modulating_link", { distance = (opts2 or {}).distance or 0 })
+    d.methods = { getClosestDistance = function() return d.distance end }
+    return d
+  end
+
+  --- The ship's name on a block, readable from outside the hull.
+  function world.plate(side, opts2)
+    local d = world.add(side, "name_plate", { plateName = (opts2 or {}).name or "" })
+    d.methods = {
+      getName = function() return d.plateName end,
+      setName = function(name) record(d, "setName", name); d.plateName = name end,
+    }
+    return d
+  end
+
+  function world.swivel(side, opts2)
+    local d = world.add(side, "swivel_bearing", { angle = (opts2 or {}).angle or 0 })
+    d.methods = {
+      getTargetAngle = function() return d.angle end,
+      getTargetAngleRad = function() return math.rad(d.angle) end,
+    }
+    return d
+  end
+
   function world.orientation(side)
     local d = world.add(side, "virtual_orientation_source",
       { active = false, x = 0, z = 0 })

@@ -98,6 +98,9 @@ local function redraw()
       ("%.1f"):format(fix.speed or 0)),
     ("pos %s"):format(fix.x and ("%.0f %.0f %.0f"):format(fix.x, fix.y or 0, fix.z) or "--"),
     ("fix %s"):format(instruments.age(fix, now())),
+    ("tilt %s %s"):format(
+      fix.pitch and ("%+.0f"):format(fix.pitch) or "--",
+      fix.roll and ("%+.0f"):format(fix.roll) or "--"),
     ("why %s"):format(tostring(pilot.fl.why)),
   }
 
@@ -155,6 +158,10 @@ local function telemetry()
     source = fix.source,
     fixAge = fix.fixAge,
     signals = fix.signals,
+    pitch  = fix.pitch,
+    roll   = fix.roll,
+    beacon = fix.beacon,
+    beaconRange = fix.beaconRange,
     flight = plan,
     goal   = pilot.fl.goal,
     faults = fix.faults,
@@ -382,6 +389,13 @@ local function handle(from, msg)
       return
     end
     os.setComputerLabel(name)
+
+    -- ...and onto the hull's own nameplate, if it has one. The label is what
+    -- the network uses; the plate is the same name made visible from outside,
+    -- which is the only place it helps while you are standing on the ground
+    -- watching the thing come in.
+    hull.setPlateName(name)
+
     net.send(from, { type = "ack", of = "rename" })
     return
   end

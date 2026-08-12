@@ -902,6 +902,69 @@ do
 end
 
 --------------------------------------------------------------------------------
+section("hull: the rest of the instruments")
+--------------------------------------------------------------------------------
+
+-- Every type string below is the one the peripheral class's own getType()
+-- returns. They are not always the block's name, and a role that auto-finds
+-- nothing is a silent instrument rather than an error -- which is the failure
+-- that would be hardest to notice.
+do
+  local mock = require("test.mockperipheral")
+  local hull = require("lib.hull")
+
+  local w = mock.new{}
+  w.navTable("navigation_table_0")
+  w.altimeter("altitude_sensor_0")
+  w.velocimeter("velocity_sensor_0")
+  w.gimbal("gimbal_sensor_0")
+  w.optical("optical_sensor_0")
+  w.dockPort("docking_connector_0")
+  w.beacon("directional_link_0", { angle = 135 })
+  w.beaconRange("modulating_link_0", { distance = 42.5 })
+  w.plate("name_plate_0", { name = "Kestrel" })
+  w.swivel("swivel_bearing_0", { angle = 12 })
+  _G.peripheral = w.api
+
+  -- No instruments block at all, so every one of these has to be found by type.
+  local ok = hull.define({ controls = {}, mix = {} })
+  check(ok, "a hull with every instrument and no instrument block loads clean")
+
+  for _, role in ipairs({ "nav", "alt", "vel", "gimbal", "ground", "dock",
+                          "beacon", "range", "plate", "swivel" }) do
+    checkQuiet(hull.instruments[role] ~= nil, "found " .. role, role)
+  end
+  check(hull.instruments.beacon ~= nil and hull.instruments.range ~= nil,
+        "the two linked receivers are found by their real type names")
+  check(hull.instruments.plate ~= nil, "and so is the nameplate")
+
+  local raw = hull.read(1)
+  check(raw.beacon == 135, "a directional link gives a bearing to the nearest link",
+        raw.beacon)
+  check(raw.beaconRange == 42.5, "and a modulating one gives the range",
+        raw.beaconRange)
+  check(raw.swivel == 12, "a swivel bearing reports where it is pointing", raw.swivel)
+
+  -- The nameplate is a name, not a reading, so it is not in the sweep.
+  check(hull.plateName() == "Kestrel", "the nameplate can be read", hull.plateName())
+  check(hull.setPlateName("Merlin"), "and written")
+  check(w.device("name_plate_0").plateName == "Merlin", "which reaches the block",
+        w.device("name_plate_0").plateName)
+
+  -- A hull without one must not be a fault: most are.
+  local w2 = mock.new{}
+  w2.navTable("nav0")
+  w2.altimeter("alt0")
+  _G.peripheral = w2.api
+  hull.define({ controls = {}, mix = {} })
+  check(hull.plateName() == nil, "a hull with no nameplate reports none")
+  check(hull.setPlateName("x") == false, "and writing one is refused, not fatal")
+  check(next(hull.faults) == nil, "without recording a fault", next(hull.faults))
+
+  _G.peripheral = realPeripheral
+end
+
+--------------------------------------------------------------------------------
 section("hull: redstone")
 --------------------------------------------------------------------------------
 

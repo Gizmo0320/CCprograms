@@ -91,6 +91,8 @@ function instruments.fuse(prev, raw, gps, now)
     pitch = raw.pitch, roll = raw.roll,
     clearance = raw.clearance, ground = raw.ground,
     docked = raw.docked, stick = raw.stick, signals = raw.signals,
+    beacon = raw.beacon, beaconRange = raw.beaconRange, swivel = raw.swivel,
+    tiltSource = raw.tiltSource,
     fuel = raw.fuel, capacity = raw.capacity, burn = raw.burn,
     thrust = raw.thrust, lift = raw.lift,
     faults = raw.faults,

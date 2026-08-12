@@ -185,6 +185,8 @@ end
 -- them is only necessary when there are two -- but writing them down makes the
 -- file a description of the ship rather than a list of overrides, and a hull
 -- that loses a sensor then says so instead of quietly flying without it.
+-- The type strings are the ones each peripheral class's own getType() returns,
+-- which are not always the block's name.
 local ROLES = {
   { "nav",    "navigation_table" },
   { "alt",    "altitude_sensor" },
@@ -194,6 +196,10 @@ local ROLES = {
   { "dock",   "docking_connector" },
   { "stick",  "analogue_joystick" },
   { "link",   "advanced_data_link" },
+  { "beacon", "directional_link" },
+  { "range",  "modulating_link" },
+  { "plate",  "name_plate" },
+  { "swivel", "swivel_bearing" },
 }
 
 local instrumentLines = {}
@@ -213,6 +219,10 @@ end
 if not first("navigation_table") then
   notes[#notes + 1] = "There is no navigation table. Without one this ship can"
   notes[#notes + 1] = "hold altitude but cannot navigate to anything."
+end
+if first("gimbal_sensor") then
+  notes[#notes + 1] = "A gimbal sensor peripheral was found, so tilt is read"
+  notes[#notes + 1] = "directly and there is no need to wire it as redstone."
 end
 if not first("altitude_sensor") then
   notes[#notes + 1] = "There is no altitude sensor. The pilot will fall back to"
