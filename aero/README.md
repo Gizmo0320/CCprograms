@@ -62,6 +62,63 @@ install --net=north --channel=4300 --role=pilot --name=Kestrel
 To update later, on any computer: `update`, or `update --check` to see what
 would change without changing it. A ship in the air **refuses** an update.
 
+### The manual is in the game
+
+```
+guide
+```
+
+The whole thing — first flight, the hull file, balloons, the guards, tuning and
+troubleshooting — readable on the ship's own computer, the tower or the pocket.
+`guide bingo` opens it at the first topic that mentions bingo fuel, which is a
+reasonable thing to type when a ship has just turned round on you.
+
+It is there because the moment you need to know why a ship will not take off is
+the moment you are standing next to it in a cave, and a page on the internet is
+not reachable from there.
+
+## Quick start
+
+From nothing to a ship in the air.
+
+**1. Build the contraption** with a computer on it, and assemble it. Put a
+wireless modem on that computer, a navigation table and an altitude sensor on
+the hull, and an optical sensor pointing down.
+
+**2. Install** on the ship's computer, on an advanced computer at base, and on
+an advanced pocket computer — the same one-liner on all three. It asks four
+things; the defaults are fine for a first ship.
+
+**3. Survey the hull.** On the ship's computer:
+
+```
+probe
+```
+
+It writes `/craft.cfg` from what it can see, and `/aero.survey.txt` listing
+every peripheral it found.
+
+**4. Check the one guess.** Open `/craft.cfg` and confirm which bearing is
+`lift` and which is `main`. `probe` assumes the first bearing lifts and the
+second pushes; that is the commonest arrangement and still a guess, and getting
+it backwards is a ship that accelerates into the ground.
+
+**5. Tethered test — do not skip this.** Run `pilot` with no flight plan. Check
+the pocket computer sees the ship. Then press **Ctrl-T**. Every thruster must go
+to zero and back to redstone control (`getControlMode()` reads `"redstone"`).
+Nothing should fly until this passes: it is the difference between a program you
+can stop and one you cannot.
+
+**6. Put down a pad.** Stand where you want it. On the pocket: **nav** tab,
+`+ pad here`, name it. Tap the name to make it **home** — the bingo-fuel guard
+needs somewhere to divert to.
+
+**7. Put down a second waypoint** somewhere you can see from the pad.
+
+**8. Fly it.** **fly** tab: set an altitude well clear of anything, tap the
+waypoint, tap `FLY IT`. Watch it on the pocket, and keep a hand near the
+joystick — touching it takes control back instantly.
+
 ## The hull: `/craft.cfg`
 
 The installer deliberately does not write one. Which bearing holds the ship up
@@ -553,6 +610,30 @@ If the ship hunts left and right of its heading, `hdgP` is too high. If it rolls
 out of turns early and then overshoots, `hdgD` is too high — yaw drives a *rate*
 of turn, so this loop needs far less damping than it looks like it should.
 
+## When it goes wrong
+
+Also in the game, as `guide` → *When it goes wrong*.
+
+| What you see | What it usually is |
+| --- | --- |
+| Pocket shows **LOST** and no ships | No wireless modem, or the computers are on different channels. They must all match; reinstall to change one. |
+| One ship shows **LOST** | Out of modem range, or its chunk is not loaded. An ender modem on the tower is the fix. |
+| Refuses to take off | `preflight` rejected it and said why in the log: no plan, no cruise altitude, no usable fix, or not enough fuel for the distance. |
+| Hands the hull back the moment it starts | No altitude source. The altitude sensor must be part of the assembled contraption and named in `/craft.cfg`. |
+| Holds height but will not navigate | No navigation table, or it is not on the assembled ship. |
+| Flies confidently the wrong way | `lift` and `main` swapped in `/craft.cfg`, or a mix term with the wrong `scale`. |
+| Climbs like a rocket on takeoff | `hover` far too high, or the mix is driving lift from two terms that add to more than you meant. |
+| Sinks slowly and never climbs | `hover` too low. Raise it; `vsI` will find the rest within a few seconds. |
+| Bobs up and down for ever | Thruster gains on a balloon. See **Balloons** — it wants roughly a quarter of them. |
+| Wanders either side of its heading | `hdgP` too high. |
+| Rolls out of a turn early, then overshoots | `hdgD` too high. Yaw drives a *rate* of turn, so this loop needs far less damping than it looks like it should. |
+| Turns round part way to somewhere | Bingo fuel. The log says `bingo`. It is latched, and topping a tank up will not un-divert it. |
+| Stops and climbs for no visible reason | The obstacle or clearance guard. The log says which. |
+| Drifts into a cliff while climbing | Expected, and documented above: a ship has no brakes. Raise `config.reaction`. |
+| Nothing on the **nav** tab | Waypoints live on the tower. Without one, the pocket shows only what ships have cached. |
+| `update` refused | The ship is airborne. Land it first — this is deliberate. |
+| A control shows **FAULT** on the ship panel | That peripheral is not answering. It has been broken off, or renamed, or was never on the contraption. |
+
 ## Tests
 
 There is no Create Aeronautics outside the game, so the modules run against a
@@ -568,7 +649,7 @@ Results are written to `/test-summary.txt` and `/test-*-results.txt` on the
 emulated computer rather than stdout, because headless mode redraws the entire
 terminal on every update.
 
-612 assertions. `spec.lua` covers each module on its own — the heading
+682 assertions. `spec.lua` covers each module on its own — the heading
 arithmetic and the wrap, plans and legs, sensor fusion and the ageing of a
 dead-reckoned fix, the PID loops and the integral clamp, every flight state and
 all four guards, the hull abstraction over a mock of the real peripheral API, the

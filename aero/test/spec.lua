@@ -497,6 +497,81 @@ do
 end
 
 --------------------------------------------------------------------------------
+section("guide")
+--------------------------------------------------------------------------------
+
+-- The manual ships with the program so `guide` works in game, on the computer
+-- bolted to the ship, at the moment something is wrong with it. Which means the
+-- text is now something that can rot, so it is checked like anything else.
+do
+  local guide = require("lib.guide")
+
+  check(#guide.topics >= 8, "there is a manual", #guide.topics)
+
+  local titles = {}
+  for _, topic in ipairs(guide.topics) do
+    checkQuiet(type(topic.title) == "string" and topic.title ~= "",
+               "a topic has a title")
+    checkQuiet(type(topic.body) == "string" and #topic.body > 40,
+               "and a body worth reading: " .. tostring(topic.title))
+    checkQuiet(titles[topic.title] == nil,
+               "and a title of its own: " .. tostring(topic.title))
+    titles[topic.title] = true
+  end
+  check(true, "every topic has a unique title and a real body")
+
+  -- The whole manual is written for a pocket computer. A line wider than that
+  -- wraps mid-thought on the device most likely to be reading it, and the
+  -- wrapper cannot know that "thruster_bearing_0" must not be split -- so the
+  -- text is kept narrow by hand and checked here.
+  local widest, where = guide.widest()
+  check(widest <= 26, "no line is wider than a pocket computer",
+        ("%d in '%s'"):format(widest, tostring(where)))
+
+  -- The topics a player in trouble will actually look for.
+  for _, word in ipairs({ "probe", "craft.cfg", "balloon", "hold = true",
+                          "wireless modem", "tether", "guard", "bingo",
+                          "hover", "waypoint" }) do
+    checkQuiet(#guide.search(word) > 0, "the manual mentions " .. word)
+  end
+  check(#guide.search("probe") > 0 and #guide.search("bingo") > 0,
+        "and covers what somebody in trouble would search for")
+
+  -- Search.
+  check(#guide.search("") == #guide.topics,
+        "an empty search puts the whole manual back")
+  check(#guide.search("BALLOON") > 0, "search ignores case")
+  check(#guide.search("zzzznotathing") == 0, "and finds nothing when there is none")
+
+  -- Wrapping. Blank lines are paragraph breaks and leading spaces are tables;
+  -- a wrapper that ate either would run the manual together.
+  local wrapped = guide.wrap("one two three four five six seven", 10)
+  for _, line in ipairs(wrapped) do
+    checkQuiet(#line <= 10, "wrapped to width: " .. line)
+  end
+  check(#wrapped > 1, "long text wraps", #wrapped)
+
+  local kept = guide.wrap("a\n\nb", 20)
+  check(#kept == 3 and kept[2] == "", "blank lines survive wrapping")
+
+  local indented = guide.wrap("  indented line here", 40)
+  check(indented[1]:sub(1, 2) == "  ", "and so does an indent")
+
+  -- A single word longer than the line has nowhere to break, and must be cut
+  -- rather than loop forever looking for a space.
+  local long = guide.wrap("supercalifragilistic", 8)
+  check(#long >= 2 and #long[1] <= 8, "an unbreakable word is cut, not hung on",
+        #long)
+
+  -- Every topic must survive being wrapped to a pocket width without loss.
+  for _, topic in ipairs(guide.topics) do
+    local lines = guide.wrap(topic.body, 26)
+    checkQuiet(#lines > 0, "wraps: " .. topic.title)
+  end
+  check(true, "every topic wraps to 26 columns")
+end
+
+--------------------------------------------------------------------------------
 section("ui")
 --------------------------------------------------------------------------------
 

@@ -340,6 +340,13 @@ if ROLE == "pilot" then
 end
 
 print()
+-- Said on every machine, and last, so it is the line still on screen. The whole
+-- manual ships with the program precisely so nobody has to go and find it.
+say("Type `guide` for the manual: first flight, the", colours.white)
+say("hull file, the guards, tuning and what to do when", colours.white)
+say("it goes wrong.", colours.white)
+
+print()
 say("Reboot to start? (y/N, continues on its own in 15s)", colours.yellow)
 
 -- Timed rather than a bare pullEvent. Installing across a row of computers is a

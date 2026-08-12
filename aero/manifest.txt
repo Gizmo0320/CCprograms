@@ -15,6 +15,7 @@
 startup.lua
 update.lua
 probe.lua
+guide.lua
 pilot.lua
 server.lua
 remote.lua
@@ -29,4 +30,5 @@ lib/autopilot.lua
 lib/nav.lua
 lib/sable.lua
 lib/ui.lua
+lib/guide.lua
 lib/flight.lua
