@@ -412,6 +412,32 @@ is what stops a click landing on the button next to the one it looks like; the
 remote suite has a case for exactly that, after picking a ship added a row and
 shifted every action below it.
 
+### Who has the conn
+
+Several people can watch one ship; one flies it. `flight.mayCommand` refuses an
+order from anyone but the holder, which is the joystick guard's problem with more
+hands -- two pockets sending contradictory orders a second apart leaves a ship
+obeying whichever arrived last and nobody able to say why.
+
+Held rather than locked: `take` is never refused, because a ship nobody can
+command because its commander logged off is worse than the muddle this prevents.
+It is deliberate, it is logged with both names, and control lapses by itself
+after `config.conn` of silence so the common case needs no ceremony.
+
+Two details that are easy to get wrong. The tower **stamps `sender` with the
+original sender** when it relays, or every relayed order would look like it came
+from the same place and one person taking control would silently hand it to
+everybody. It is called `sender` rather than `by` because `by` is the relative
+altitude on an `alt` order: when the two shared a name, `alt by = -20` set the
+sender to -20 and the ship refused its own commander his own order. Only the
+round trip through `pilot_spec` found it. And
+an order with **no sender at all** is not blocked -- a direct message from a
+script that did not say who it was predates this feature and should not start
+failing because of it.
+
+`tune` needs the conn too: two people moving the same gain in opposite directions
+is the same problem with a slower fuse.
+
 ### State persistence
 
 Two files, deliberately separate:
@@ -459,6 +485,9 @@ Every message is a table with a `type` field, carried in a `lib/net` frame.
 
 Pocket / server → pilot:
 - `{type="fly", names={...}, alt=<n>}` · `{type="hold"}` · `{type="land", pad=?}`
+- `{type="alt", alt=<n>}` or `{type="alt", by=<n>}` — raise or lower, with no
+  plan needed. From a parked ship this takes off and holds.
+- `{type="take"}` / `{type="release"}` — the conn, see below
 - `{type="dock", pad=<name>}` · `{type="rtb"}` · `{type="stop"}` (descend now)
 - `{type="hull?"}` — describe yourself; how the pocket learns the controls
 - `{type="tune", gains={...}}` · `{type="rename", name=...}` · `{type="update", ...}`

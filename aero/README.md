@@ -478,6 +478,53 @@ out.
 
 **log** — what happened and why.
 
+### Up and down
+
+`ALT raise / lower` on the fleet tab, and again on a ship's own panel. Tap the
+right of the row to climb, the left to descend, ten blocks a tap. Altitude does
+not need a flight plan.
+
+- A **parked** ship takes off for it and holds where you put it — the short way
+  to say "take off and hover at 140", which previously could not be said at all.
+- A **flying** ship just changes what it holds. If it was on a leg it keeps the
+  leg: this is a change of cruise altitude, not a change of mind.
+- Two taps move it twice. The second is measured from where the ship is *going*,
+  not from where it has got to, so a quick double tap does not race the climb.
+- Silly numbers are clamped, because the altitude is something you type now and
+  `1500` instead of `150` is a ship that spends four minutes climbing out of
+  sight. A hull can narrow the range with `limits.ceiling` and `limits.floor`.
+
+### Sharing a ship
+
+Anyone can **watch** a ship — telemetry is broadcast and costs nothing. One
+person at a time **flies** it.
+
+Two pocket computers sending `land` and `fly to the quarry` a second apart is the
+joystick problem again with more hands: the ship obeys whichever arrived last and
+nobody watching can tell why. So control is **held**. The first order takes it;
+anyone else is refused and told who to ask.
+
+On a ship's panel:
+
+```
+ control   Anna
+ TAKE control from Anna
+```
+
+**Taking over always works.** A ship nobody can command because its commander
+logged off would be worse than the muddle this prevents — but it is a deliberate
+tap and it goes in the log, naming both people. `RELEASE control` hands it back
+to nobody, and control lapses on its own after `config.conn` (90s) of silence, so
+wandering off needs no ceremony.
+
+A ship somebody else is flying is marked with a `*` in the fleet list, and the
+tower shows the name in a **flown by** column — which is what you want to know
+before you touch anything.
+
+Orders relayed through the tower are stamped with the pocket computer that
+*originally* sent them, so the conn belongs to the person holding it rather than
+to the tower that passed the message on.
+
 ### One ship's panel
 
 Pick a ship on the **fleet** tab and `SHIP` opens its own screen. This is where
@@ -632,6 +679,8 @@ Also in the game, as `guide` → *When it goes wrong*.
 | Drifts into a cliff while climbing | Expected, and documented above: a ship has no brakes. Raise `config.reaction`. |
 | Nothing on the **nav** tab | Waypoints live on the tower. Without one, the pocket shows only what ships have cached. |
 | `update` refused | The ship is airborne. Land it first — this is deliberate. |
+| An order is refused, naming somebody | They have control. `TAKE control` on the ship's panel, or wait 90s for it to lapse. |
+| Altitude order refused on a parked ship | It has no altitude to move *from* and none was given. Send an absolute altitude, or check it has an altitude sensor. |
 | A control shows **FAULT** on the ship panel | That peripheral is not answering. It has been broken off, or renamed, or was never on the contraption. |
 
 ## Tests
@@ -649,7 +698,7 @@ Results are written to `/test-summary.txt` and `/test-*-results.txt` on the
 emulated computer rather than stdout, because headless mode redraws the entire
 terminal on every update.
 
-682 assertions. `spec.lua` covers each module on its own — the heading
+753 assertions. `spec.lua` covers each module on its own — the heading
 arithmetic and the wrap, plans and legs, sensor fusion and the ageing of a
 dead-reckoned fix, the PID loops and the integral clamp, every flight state and
 all four guards, the hull abstraction over a mock of the real peripheral API, the

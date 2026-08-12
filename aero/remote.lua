@@ -137,9 +137,19 @@ end
 -- Routed through the tower when one is answering, so the log stays complete: a
 -- command sent straight to a ship is invisible to the tower, and the log then
 -- shows a ship changing its mind for no recorded reason.
+--- Who this pocket computer is, for the conn and for the log.
+--
+-- The label rather than the id, because "Anna has control" is an answer and
+-- "computer 42 has control" is a riddle.
+local function me()
+  return os.getComputerLabel() or ("pocket " .. os.getComputerID())
+end
+
 local function order(body, why)
+  body.who = body.who or me()
+
   if haveServer() then
-    toServer({ type = "command", target = selected, body = body })
+    toServer({ type = "command", target = selected, body = body, who = me() })
   else
     local sent = 0
     for _, s in ipairs(roster()) do
@@ -185,6 +195,14 @@ local function buildFleet()
   end
 
   row({ kind = "gap" })
+
+  -- Altitude, which is the thing you want most often and had no control at all:
+  -- every altitude used to arrive attached to a flight plan.
+  row({ kind = "step", text = "  ALT   raise / lower", click = function(x)
+    local by = ((x or 0) >= W - 1) and config.altStep or -config.altStep
+    order({ type = "alt", by = by }, (by > 0 and "up " or "down ") .. math.abs(by))
+  end })
+
   row({ kind = "action", text = "HOLD   stop and hover", colour = ui.theme.warn,
         click = function() order({ type = "hold" }, "holding") end })
   row({ kind = "action", text = "LAND   come down here", colour = ui.theme.warn,
@@ -232,6 +250,38 @@ local function buildShip()
   row({ kind = "pair", left = "vs", right = ui.num(tlm.vs, "%+.1f") })
   row({ kind = "pair", left = "tilt", right = ui.num(tlm.tilt) })
   row({ kind = "pair", left = "fix", right = tostring(s.source or "-") })
+
+  -- Who is flying it. Several people can watch one ship; one commands it, and
+  -- the difference is worth a line rather than a discovery.
+  local held = flight and flight.commanderName
+  local mine = (flight and flight.commander) == os.getComputerID()
+  row({ kind = "pair", left = "control", right = held or "nobody",
+        colour = mine and ui.theme.ok or (held and ui.theme.warn or ui.theme.dim) })
+
+  if mine then
+    row({ kind = "action", text = "RELEASE control", colour = ui.theme.dim,
+          click = function()
+            net.send(s.id, { type = "release", who = me() })
+            note("released")
+          end })
+  else
+    row({ kind = "action",
+          text = held and ("TAKE control from " .. held) or "TAKE control",
+          colour = held and ui.theme.warn or ui.theme.accent,
+          click = function()
+            net.send(s.id, { type = "take", who = me() })
+            note("taking control")
+          end })
+  end
+
+  -- Altitude, on the ship's own panel as well: this is where you are looking
+  -- when you want to nudge one ship rather than command the fleet.
+  row({ kind = "step", text = ("  alt %s"):format(ui.num(flight and flight.alt)),
+        click = function(x)
+          local by = ((x or 0) >= W - 1) and config.altStep or -config.altStep
+          net.send(s.id, { type = "alt", by = by, who = me() })
+          note((by > 0 and "up " or "down ") .. math.abs(by))
+        end })
   if flight.guard then
     row({ kind = "pair", left = "guard", right = flight.guard,
           colour = ui.guardColour(flight.guard) })
@@ -438,6 +488,12 @@ local function drawRow(entry, y, w)
       ui.at(13, y, ui.fit(flight.state or "?", 8, true),
             ui.stateColour[flight.state] or ui.theme.dim, bg)
       ui.at(22, y, ("%4s"):format(ui.num(s.alt)), ui.theme.dim, bg)
+
+      -- One character for "somebody else is flying this", which is the thing
+      -- you need to know before you touch it.
+      if flight.commander and flight.commander ~= os.getComputerID() then
+        ui.at(w, y, "*", ui.theme.warn, bg)
+      end
     end
 
   elseif entry.kind == "gauge" then
@@ -695,6 +751,10 @@ while true do
           note("deleted")
         elseif msg.of == "route!" then
           note("route saved")
+        elseif msg.of == "take" then
+          note("you have control")
+        elseif msg.of == "release" then
+          note("control released")
         elseif msg.of == "tune" then
           -- The gains have moved, so the cached hull description is stale.
           link.hulls[from] = nil

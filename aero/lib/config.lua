@@ -131,6 +131,38 @@ config.clearance = 6
 config.fuelReserve = 1.5
 
 --------------------------------------------------------------------------------
+-- Altitude
+--------------------------------------------------------------------------------
+
+-- How far one tap of up or down moves the hold altitude (blocks). Ten is a
+-- storey and a bit: small enough to place a ship over a wall, large enough that
+-- getting from the ground to cruise is not thirty taps.
+config.altStep = 10
+
+-- The highest and lowest a ship may be sent, as a guard against a typo rather
+-- than as a flight envelope (blocks). Minecraft's build limits with a little
+-- room; a hull can narrow them with limits.ceiling and limits.floor.
+--
+-- Worth having because the altitude is now something you type, and "1500"
+-- instead of "150" on a ship that will happily try is a ship that spends the
+-- next four minutes climbing out of sight.
+config.maxAlt = 320
+config.minAlt = -60
+
+--------------------------------------------------------------------------------
+-- Who is flying
+--------------------------------------------------------------------------------
+
+-- How long a commander's silence lasts before control lapses (seconds).
+--
+-- Long, because the holder of the conn is not obliged to keep talking -- they
+-- may be watching a ship fly a leg for two minutes -- and short enough that
+-- somebody who put their pocket computer in a chest does not own the ship
+-- forever. An explicit takeover works at any time regardless; this is only for
+-- the case where nobody is there to release it.
+config.conn = 90
+
+--------------------------------------------------------------------------------
 -- Attitude
 --------------------------------------------------------------------------------
 

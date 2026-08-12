@@ -564,6 +564,104 @@ do
 end
 
 --------------------------------------------------------------------------------
+section("altitude and control")
+--------------------------------------------------------------------------------
+
+do
+  local ships = { { id = SHIP, label = "Kestrel", alt = 120,
+                    flight = { state = "loiter", alt = 120 } } }
+
+  -- Raising and lowering, which is the thing wanted most often and had no
+  -- control at all: every altitude used to arrive attached to a flight plan.
+  local probe = runRemote{ script = { towerNet(ships), snap() } }
+  local altRow = rowOf(probe.screens[1], "ALT")
+  check(altRow ~= nil, "the fleet screen offers altitude", altRow)
+
+  local up = runRemote{
+    script = { towerNet(ships), snap(), click(26, altRow or 1) },
+  }
+  local raised = sentOf(up, "command")
+  check(raised and raised.body and raised.body.type == "alt",
+        "the right of the row sends an altitude order",
+        raised and raised.body and raised.body.type)
+  check(raised and raised.body.by ~= nil and raised.body.alt == nil,
+        "relative rather than absolute, which is what a pair of buttons means",
+        raised and raised.body.by)
+  check(raised and (raised.body.by or 0) > 0, "and upwards",
+        raised and raised.body.by)
+
+  local down = runRemote{
+    script = { towerNet(ships), snap(), click(24, altRow or 1) },
+  }
+  local lowered = sentOf(down, "command")
+  check(lowered and lowered.body and (lowered.body.by or 0) < 0,
+        "and the left of the row sends it downwards",
+        lowered and lowered.body and lowered.body.by)
+
+  -- Every order says who sent it, so a ship can hold the conn for a person
+  -- rather than for whichever computer relayed it.
+  check(raised and raised.body.who ~= nil,
+        "orders carry who sent them", raised and raised.body.who)
+
+  ------------------------------------------------------------------------------
+  -- The conn.
+
+  local shipRow = rowOf(probe.screens[1], "Kestrel")
+  local picked = runRemote{
+    script = { towerNet(ships), click(2, shipRow or 1), snap() },
+  }
+  local openRow = rowOf(picked.screens[1], "SHIP")
+
+  local HULL = { controls = {}, gains = {}, problems = {} }
+
+  local free = runRemote{
+    script = { towerNet(ships), click(2, shipRow or 1), click(2, openRow or 1),
+               frame(SHIP, { type = "hull", hull = HULL }), snap() },
+  }
+  check(onScreen(free.screens[1], "nobody"),
+        "a ship nobody is flying says so")
+  check(onScreen(free.screens[1], "TAKE control"),
+        "and offers to take it")
+
+  local takeRow = rowOf(free.screens[1], "TAKE control")
+  local taken = runRemote{
+    script = { towerNet(ships), click(2, shipRow or 1), click(2, openRow or 1),
+               frame(SHIP, { type = "hull", hull = HULL }),
+               snap(), click(2, takeRow or 1) },
+  }
+  local take, to = sentOf(taken, "take")
+  check(take ~= nil, "tapping it takes control")
+  check(to == SHIP, "straight to the ship, which owns the conn", to)
+  check(take and take.who ~= nil, "saying who is taking it", take and take.who)
+
+  -- Somebody else already has it: the panel names them, and the fleet list
+  -- marks the ship, because that is what you need before you touch anything.
+  local held = { { id = SHIP, label = "Kestrel", alt = 120,
+                   flight = { state = "loiter", alt = 120,
+                              commander = 99, commanderName = "Anna" } } }
+
+  local heldProbe = runRemote{ script = { towerNet(held), snap() } }
+  check(onScreen(heldProbe.screens[1], "*"),
+        "a ship somebody else is flying is marked in the fleet list")
+
+  local heldShipRow = rowOf(heldProbe.screens[1], "Kestrel")
+  local heldPicked = runRemote{
+    script = { towerNet(held), click(2, heldShipRow or 1), snap() },
+  }
+  local heldOpen = rowOf(heldPicked.screens[1], "SHIP")
+
+  local panel = runRemote{
+    script = { towerNet(held), click(2, heldShipRow or 1), click(2, heldOpen or 1),
+               frame(SHIP, { type = "hull", hull = HULL }), snap() },
+  }
+  check(onScreen(panel.screens[1], "Anna"),
+        "and the panel names whoever has it",
+        panel.screens[1] and panel.screens[1][10])
+  check(onScreen(panel.screens[1], "TAKE control from"),
+        "and offers to take it from them by name")
+end
+
+--------------------------------------------------------------------------------
 section("routes and deleting")
 --------------------------------------------------------------------------------
 

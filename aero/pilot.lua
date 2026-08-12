@@ -243,6 +243,8 @@ local function telemetry()
     ahead  = fix.ahead,
     mass   = fix.mass,
     assembled = fix.assembled,
+    commander     = pilot.fl.commander,
+    commanderName = pilot.fl.commanderName,
     flight = plan,
     goal   = pilot.fl.goal,
     faults = fix.faults,
@@ -429,6 +431,16 @@ local function handle(from, msg)
     home      = pilot.home,
     cruiseAlt = pilot.fl.alt,
     fix       = pilot.fix,
+
+    -- Who is asking. `sender` is set by the tower when it relays and carries the
+    -- pocket computer that originally sent the order, so the conn belongs to the
+    -- person holding it rather than to the tower that passed it on.
+    --
+    -- Deliberately not called `by`: that is the relative altitude on an `alt`
+    -- order, and sharing the name meant `alt by = -20` set the sender to -20 and
+    -- the ship refused its own commander his own order.
+    from = msg.sender or from,
+    who  = msg.who,
   }
 
   ------------------------------------------------------------------------------
@@ -455,6 +467,14 @@ local function handle(from, msg)
   if msg.type == "tune" then
     if type(msg.gains) ~= "table" then
       net.send(from, { type = "error", reason = "no gains" })
+      return
+    end
+
+    -- Tuning is flying. Two people moving the same gain in opposite directions
+    -- would be the conn problem with a slower fuse.
+    local may, held = flight.mayCommand(pilot.fl, ctx.from, now())
+    if not may then
+      net.send(from, { type = "error", reason = held })
       return
     end
     pilot.ap.gains = autopilot.gains(msg.gains)

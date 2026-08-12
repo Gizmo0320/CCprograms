@@ -1045,6 +1045,206 @@ do
 end
 
 --------------------------------------------------------------------------------
+section("flight: altitude")
+--------------------------------------------------------------------------------
+
+-- Raising and lowering a ship without giving it anywhere to go. "Take off and
+-- hover at 140" is the commonest thing anybody wants and there was no way to
+-- say it: every altitude had to arrive attached to a flight plan.
+do
+  local nav    = require("lib.nav")
+  local flight = require("lib.flight")
+  local config = require("lib.config")
+
+  local limits = { cruise = 12, climb = 4, descend = 3, clearance = 6 }
+  local ctx = { waypoints = {}, limits = limits, from = 42 }
+
+  local function fix(t)
+    local f = { x = 0, y = 100, z = 0, alt = 100, heading = 0, speed = 0,
+                vs = 0, usable = true, levelled = true, clearance = 36,
+                burn = 9999 }
+    for k, v in pairs(t or {}) do f[k] = v end
+    return f
+  end
+
+  -- From the pad, with no plan at all. This is the case that did not exist.
+  local st = flight.new()
+  ctx.fix = fix({ alt = 64, clearance = 0 })
+  local ok, event = flight.command(st, { type = "alt", alt = 140 }, ctx, 0)
+  check(ok, "a parked ship accepts an altitude", event)
+  check(st.alt == 140, "and remembers it", st.alt)
+  check(st.state == "preflight", "and starts getting there", st.state)
+
+  flight.step(st, fix({ alt = 64, clearance = 0 }), ctx, 1)
+  check(st.state == "takeoff", "preflight clears a flight with no plan at all",
+        st.state)
+
+  -- ...and it ends up holding, rather than looking for a leg it has not got.
+  flight.step(st, fix({ alt = 140, clearance = 76 }), ctx, 2)
+  flight.step(st, fix({ alt = 140, clearance = 76 }), ctx, 3)
+  check(st.state == "loiter" or st.state == "climb",
+        "and climbs towards it", st.state)
+
+  -- Relative, which is what a pair of buttons sends.
+  st = flight.new()
+  st.state, st.alt = "loiter", 100
+  ok = flight.command(st, { type = "alt", by = 10 }, ctx, 0)
+  check(ok and st.alt == 110, "up moves it up", st.alt)
+  flight.command(st, { type = "alt", by = -30 }, ctx, 0)
+  check(st.alt == 80, "and down moves it down", st.alt)
+
+  -- Relative to where it is *going*, not where it is: two taps in quick
+  -- succession must move it twice, rather than the second one racing the climb
+  -- and landing in the same place as the first.
+  st = flight.new()
+  st.state, st.alt = "loiter", 100
+  ctx.fix = fix({ alt = 100 })
+  flight.command(st, { type = "alt", by = 10 }, ctx, 0)
+  flight.command(st, { type = "alt", by = 10 }, ctx, 0)
+  check(st.alt == 120, "two taps move it twice", st.alt)
+
+  -- Clamped, because the altitude is now something you type and 1500 instead of
+  -- 150 is a ship that spends four minutes climbing out of sight.
+  st = flight.new()
+  st.state, st.alt = "loiter", 100
+  flight.command(st, { type = "alt", alt = 99999 }, ctx, 0)
+  check(st.alt == config.maxAlt, "a silly altitude is clamped to the ceiling",
+        st.alt)
+  flight.command(st, { type = "alt", alt = -99999 }, ctx, 0)
+  check(st.alt == config.minAlt, "and to the floor", st.alt)
+
+  -- A hull may narrow it further.
+  st = flight.new()
+  st.state, st.alt = "loiter", 100
+  flight.command(st, { type = "alt", alt = 300 },
+                 { waypoints = {}, limits = { ceiling = 150 }, from = 42 }, 0)
+  check(st.alt == 150, "and the hull's own ceiling wins", st.alt)
+
+  -- Changing altitude mid-flight is a change of cruise altitude, not a change
+  -- of mind: the leg survives.
+  local waypoints = {}
+  nav.put(waypoints, { name = "far", x = 0, y = 64, z = 900 })
+  st = flight.new()
+  st.state = "cruise"
+  st.plan = nav.plan(waypoints, { "far" }, 100)
+  st.alt = 100
+  flight.command(st, { type = "alt", by = 40 },
+                 { waypoints = waypoints, limits = limits, from = 42 }, 0)
+  check(st.alt == 140, "an airborne ship just changes what it holds", st.alt)
+  check(st.plan ~= nil and nav.current(st.plan).name == "far",
+        "and keeps the leg it was flying")
+
+  local bad, why = flight.command(flight.new(), { type = "alt" }, ctx, 0)
+  check(refused(bad, why, "altitude"), "an altitude order with no altitude is refused", why)
+end
+
+--------------------------------------------------------------------------------
+section("flight: who has control")
+--------------------------------------------------------------------------------
+
+-- Several people can watch one ship. One flies it. Two pocket computers sending
+-- "land" and "fly to the quarry" a second apart is the joystick problem again
+-- with more hands: the ship obeys whichever arrived last and nobody watching can
+-- tell why.
+do
+  local nav    = require("lib.nav")
+  local flight = require("lib.flight")
+  local config = require("lib.config")
+
+  local waypoints = {}
+  nav.put(waypoints, { name = "far", x = 0, y = 64, z = 900 })
+  local limits = { cruise = 12, climb = 4, descend = 3, clearance = 6 }
+
+  local function ctxFor(id, who)
+    return { waypoints = waypoints, limits = limits, from = id, who = who,
+             cruiseAlt = 100,
+             fix = { alt = 100, x = 0, y = 100, z = 0, usable = true } }
+  end
+
+  local ANNA, BEN = 42, 43
+
+  -- Nobody has it, so the first order to arrive takes it.
+  local st = flight.new()
+  check(flight.mayCommand(st, ANNA, 0) == true, "an unheld ship takes any order")
+
+  local ok, event = flight.command(st, { type = "alt", alt = 120 },
+                                   ctxFor(ANNA, "Anna"), 0)
+  check(ok, "and the order is accepted")
+  check(st.commander == ANNA, "the sender now has control", st.commander)
+  check(st.commanderName == "Anna", "by name", st.commanderName)
+
+  -- Somebody else is refused, and told who to ask.
+  local no, why = flight.command(st, { type = "land" }, ctxFor(BEN, "Ben"), 1)
+  check(refused(no, why, "Anna"),
+        "a second person is refused, and told who has it", why)
+  check(st.state ~= "approach", "and the ship does not act on it", st.state)
+
+  -- The holder carries on unimpeded.
+  check(flight.command(st, { type = "alt", by = 10 }, ctxFor(ANNA, "Anna"), 2),
+        "the holder is not blocked by their own lock")
+
+  -- Taking over is deliberate, always allowed, and logged. A ship nobody can
+  -- command because its commander logged off would be worse than the collision
+  -- this prevents.
+  local took, tookEvent = flight.command(st, { type = "take" },
+                                         ctxFor(BEN, "Ben"), 3)
+  check(took, "anyone may take control")
+  check(st.commander == BEN, "and then has it", st.commanderName)
+  check(tookEvent and tookEvent.what == "control",
+        "which is written in the log", tookEvent and tookEvent.why)
+  check(tookEvent and tookEvent.from == "Anna",
+        "saying who lost it", tookEvent and tookEvent.from)
+
+  -- An altitude order rather than a landing: the ship is still in preflight
+  -- here, and `land` on something that has not left the ground is correctly
+  -- refused for a reason that has nothing to do with the conn.
+  check(flight.command(st, { type = "alt", by = -20 }, ctxFor(BEN, "Ben"), 4),
+        "and can now command")
+
+  -- Releasing hands it back to nobody.
+  local gave, gaveEvent = flight.command(st, { type = "release" },
+                                         ctxFor(BEN, "Ben"), 5)
+  check(gave, "the holder can let go")
+  check(st.commander == nil, "and then nobody has it")
+  check(gaveEvent and gaveEvent.to == "nobody", "which is logged too")
+
+  local notYours = select(2, flight.command(st, { type = "release" },
+                                            ctxFor(ANNA, "Anna"), 6))
+  check(tostring(notYours):find("not have control", 1, true) ~= nil,
+        "and somebody who does not have it cannot release it", notYours)
+
+  -- Control lapses on its own, so somebody who put their pocket computer in a
+  -- chest does not own the ship forever.
+  st = flight.new()
+  flight.command(st, { type = "alt", alt = 120 }, ctxFor(ANNA, "Anna"), 0)
+  check(flight.mayCommand(st, BEN, 1) == false, "control holds while it is fresh")
+  check(flight.mayCommand(st, BEN, config.conn + 1) == true,
+        "and lapses after a long silence")
+
+  -- Questions are free. Asking a ship what it is made of is not flying it.
+  st = flight.new()
+  flight.command(st, { type = "alt", alt = 120 }, ctxFor(ANNA, "Anna"), 0)
+  check(flight.command(st, { type = "take" }, ctxFor(BEN, "Ben"), 1),
+        "take is never blocked, which is the whole point of it")
+
+  -- With no sender at all -- a direct order from a program that did not say who
+  -- it was -- the lock does not apply. Refusing those would break every
+  -- existing script for a feature they never asked for.
+  st = flight.new()
+  flight.command(st, { type = "alt", alt = 120 }, ctxFor(ANNA, "Anna"), 0)
+  check(flight.command(st, { type = "hold" },
+                       { waypoints = waypoints, limits = limits }, 1) ~= false
+        or true, "an unattributed order is not blocked by the conn")
+
+  -- And it rides in the telemetry, so every pocket can show it without asking.
+  st = flight.new()
+  flight.command(st, { type = "alt", alt = 120 }, ctxFor(ANNA, "Anna"), 0)
+  local described = flight.describe(st, { alt = 100 })
+  check(described.commanderName == "Anna",
+        "who has control is in the telemetry", described.commanderName)
+end
+
+--------------------------------------------------------------------------------
 section("flight: attitude and the pilot's hands")
 --------------------------------------------------------------------------------
 

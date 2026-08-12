@@ -293,6 +293,102 @@ rather than landing in
 a field.
 ]] },
 
+{ title = "Up and down", body = [[
+Altitude has its own
+control. You do not need
+a flight plan to raise or
+lower a ship.
+
+On the pocket, fleet tab:
+
+  ALT   raise / lower
+
+Tap the right of the row
+to go up, the left to go
+down. Ten blocks a tap.
+The same row is on a
+ship's own panel, which
+is where you nudge one
+ship rather than the
+whole fleet.
+
+A PARKED ship takes off
+for this and holds where
+you put it. That is the
+short way to say "take
+off and hover at 140".
+
+A FLYING ship just
+changes what it holds.
+If it was on a leg it
+keeps the leg -- this is
+a change of cruise
+altitude, not a change of
+mind.
+
+Two taps move it twice.
+The second is measured
+from where the ship is
+going, not from where it
+has got to.
+
+Silly numbers are
+clamped. A hull can
+narrow the range with
+limits.ceiling and
+limits.floor.
+]] },
+
+{ title = "Sharing a ship", body = [[
+Anyone can WATCH a ship.
+Telemetry is broadcast
+and costs nothing.
+
+One person at a time
+FLIES it. Two pockets
+sending "land" and "fly
+to the quarry" a second
+apart is the joystick
+problem with more hands:
+the ship obeys whichever
+arrived last and nobody
+can tell why.
+
+So control is held. The
+first order takes it.
+Anyone else is refused
+and told who to ask.
+
+On a ship's panel:
+
+  control   Anna
+  TAKE control from Anna
+
+Taking over always works.
+A ship nobody can command
+because its commander
+logged off would be worse
+than the muddle this
+prevents. But it is a
+deliberate tap and it
+goes in the log.
+
+RELEASE control hands it
+back to nobody.
+
+Control also lapses by
+itself after about a
+minute and a half of
+silence, so wandering off
+needs no ceremony.
+
+In the fleet list, a ship
+somebody else is flying
+is marked with a star.
+The tower shows the name
+in a flown-by column.
+]] },
+
 { title = "One ship", body = [[
 Pick a ship on the fleet
 tab, then tap SHIP.

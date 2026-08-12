@@ -377,6 +377,131 @@ do
 end
 
 --------------------------------------------------------------------------------
+section("altitude and the conn")
+--------------------------------------------------------------------------------
+
+do
+  -- Raising a parked ship with no plan at all: the case that did not exist.
+  local r = runPilot{
+    script = {
+      frame(POCKET, { type = "alt", alt = 140, who = "Anna" }),
+      tick(), clockTo(5), tick(),
+    },
+  }
+  check(replyOf(r, "ack") ~= nil, "a parked ship accepts an altitude")
+
+  local tlm = lastTelemetry(r)
+  check(tlm and tlm.flight and tlm.flight.state ~= "idle",
+        "and leaves the ground for it", tlm and tlm.flight and tlm.flight.state)
+  check(tlm and tlm.flight and tlm.flight.alt == 140,
+        "holding the altitude it was given", tlm and tlm.flight and tlm.flight.alt)
+  check(tlm and tlm.commanderName == "Anna",
+        "and the sender now has control", tlm and tlm.commanderName)
+end
+
+do
+  -- Two people. The second is refused by name rather than obeyed, which is the
+  -- whole point: a ship that took both orders would do whichever arrived last
+  -- and nobody could say why.
+  local BEN = 43
+
+  local r = runPilot{
+    script = {
+      frame(POCKET, { type = "alt", alt = 140, who = "Anna" }),
+      tick(),
+      frame(BEN, { type = "stop", who = "Ben" }),
+      clockTo(5), tick(),
+    },
+  }
+
+  local refusal = nil
+  for _, s in ipairs(r.sent) do
+    if s.to == BEN and s.msg.type == "error" then refusal = s.msg end
+  end
+  check(refusal ~= nil, "a second person is refused")
+  check(refusal and tostring(refusal.reason):find("Anna", 1, true) ~= nil,
+        "and told who has it", refusal and refusal.reason)
+
+  local tlm = lastTelemetry(r)
+  check(tlm and tlm.flight and tlm.flight.state ~= "emergency",
+        "and the ship does not act on the order",
+        tlm and tlm.flight and tlm.flight.state)
+end
+
+do
+  -- Taking over is always allowed, and logged with both names.
+  local BEN = 43
+
+  local r = runPilot{
+    script = {
+      frame(POCKET, { type = "alt", alt = 140, who = "Anna" }),
+      tick(),
+      frame(BEN, { type = "take", who = "Ben" }),
+      frame(BEN, { type = "alt", by = -20, who = "Ben" }),
+      clockTo(5), tick(),
+    },
+  }
+
+  local tlm = lastTelemetry(r)
+  check(tlm and tlm.commanderName == "Ben", "anyone may take control",
+        tlm and tlm.commanderName)
+  check(tlm and tlm.flight and tlm.flight.alt == 120,
+        "and then command", tlm and tlm.flight and tlm.flight.alt)
+
+  local handover = nil
+  for _, msg in ipairs(r.casts) do
+    if msg.type == "event" and msg.what == "control" then handover = msg end
+  end
+  check(handover ~= nil, "the handover is broadcast for the log")
+  check(handover and handover.from == "Anna" and handover.to == "Ben",
+        "naming both people", handover and (tostring(handover.from) .. ">"
+          .. tostring(handover.to)))
+end
+
+do
+  -- The tower relays, and stamps the *original* sender. Without that every
+  -- relayed order would look like it came from the same place, and one person
+  -- taking control would silently hand it to everybody.
+  local BEN = 43
+
+  local r = runPilot{
+    script = {
+      -- Anna, through the tower.
+      frame(TOWER, { type = "alt", alt = 140, sender = POCKET, who = "Anna" }),
+      tick(),
+      -- Ben, also through the tower, must still be refused.
+      frame(TOWER, { type = "stop", sender = BEN, who = "Ben" }),
+      clockTo(5), tick(),
+    },
+  }
+
+  local tlm = lastTelemetry(r)
+  check(tlm and tlm.commanderName == "Anna",
+        "a relayed order holds the conn for the person, not the tower",
+        tlm and tlm.commanderName)
+
+  -- The sender field is `sender` and not `by`, and this is why. `by` is the
+  -- relative altitude on an `alt` order, and when the two shared a name a
+  -- relative altitude of -20 set the sender to -20 -- so the ship refused its
+  -- own commander his own order, and only the round trip through here showed it.
+  local by = runPilot{
+    script = {
+      frame(POCKET, { type = "alt", alt = 140, who = "Anna" }),
+      tick(),
+      frame(POCKET, { type = "alt", by = -20, who = "Anna" }),
+      clockTo(5), tick(),
+    },
+  }
+  local moved = lastTelemetry(by)
+  check(moved and moved.flight and moved.flight.alt == 120,
+        "a relative altitude is an altitude, not a sender",
+        moved and moved.flight and moved.flight.alt)
+  check(tlm and tlm.flight and tlm.flight.state ~= "emergency",
+        "so somebody else relaying through the same tower is still refused",
+        tlm and tlm.flight and tlm.flight.state)
+end
+
+--------------------------------------------------------------------------------
 section("updates")
 --------------------------------------------------------------------------------
 

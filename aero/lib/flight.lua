@@ -113,6 +113,11 @@ function flight.new()
     home  = nil,        -- waypoint name to divert to
     dockTo = nil,       -- pad name, when the flight ends in a dock
     handsAt = nil,      -- when the joystick was last touched
+
+    -- Who has the conn. Several people may watch one ship; one flies it.
+    commander     = nil,
+    commanderName = nil,
+    commandedAt   = nil,
   }
 end
 
@@ -162,17 +167,133 @@ end
 -- Commands
 --------------------------------------------------------------------------------
 
+--- Who has the conn, and may anyone else have it?
+--
+-- Several people can watch one ship -- telemetry is broadcast and costs nothing
+-- -- but only one may fly it. Two pocket computers sending "land" and "fly to
+-- the quarry" a second apart is the joystick problem again with more hands: the
+-- ship obeys whichever arrived last and nobody watching can tell why.
+--
+-- So control is held, and the holder is named in every telemetry frame. Anyone
+-- else is refused with a reason that says who to ask. Taking over is deliberate
+-- and always allowed -- this is a game, and a ship nobody can command because
+-- its commander logged off would be worse than the collision this prevents --
+-- but it is an explicit act and it is written in the log.
+--
+-- Control also lapses on its own after config.conn of silence, so the common
+-- case of somebody wandering off needs no ceremony at all.
+function flight.mayCommand(st, from, now)
+  if st.commander == nil then return true end
+  if st.commander == from then return true end
+
+  if (now - (st.commandedAt or -math.huge)) >= config.conn then
+    return true, nil, "lapsed"
+  end
+
+  return false, (st.commanderName or ("computer " .. tostring(st.commander)))
+    .. " has control"
+end
+
+--- Give control to `from`, returning an event when it actually changed hands.
+local function claim(st, ctx, now)
+  local from = ctx.from
+  if from == nil then return nil end
+
+  local previous, previousName = st.commander, st.commanderName
+  st.commander, st.commanderAt = from, now
+  st.commanderName = ctx.who or ("computer " .. tostring(from))
+  st.commandedAt = now
+
+  if previous == from then return nil end
+
+  return { what = "control", from = previousName or "nobody",
+           to = st.commanderName, why = "took control" }
+end
+
+-- Orders that change what the ship is doing, and so need the conn. Everything
+-- absent from this -- asking for the hull, asking who has control -- is a
+-- question, and questions are free.
+local COMMANDS = {
+  fly = true, route = true, hold = true, land = true, dock = true,
+  rtb = true, stop = true, park = true, alt = true, tune = true,
+}
+
 --- Take an order. Returns ok, reason-or-event.
 --
 -- Orders are refused rather than queued. A ship that accepted "fly to the
 -- quarry" while descending onto a pad and did it eventually would be doing
 -- something nobody watching could predict.
+--
+-- `ctx.from` is who sent it and `ctx.who` is what they are called. When the
+-- tower relays an order it stamps the *original* sender, so the conn belongs to
+-- the person at the pocket computer rather than to the tower that passed it on.
 function flight.command(st, cmd, ctx, now)
   ctx = ctx or {}
   local limits = ctx.limits or {}
 
   if type(cmd) ~= "table" or type(cmd.type) ~= "string" then
     return false, "not a command"
+  end
+
+  ------------------------------------------------------------------------------
+  -- Control
+  ------------------------------------------------------------------------------
+
+  if cmd.type == "take" then
+    return true, claim(st, ctx, now)
+  end
+
+  if cmd.type == "release" then
+    if st.commander ~= ctx.from then return false, "you do not have control" end
+    local name = st.commanderName
+    st.commander, st.commanderName, st.commandedAt = nil, nil, nil
+    return true, { what = "control", from = name, to = "nobody",
+                   why = "released" }
+  end
+
+  if COMMANDS[cmd.type] and ctx.from ~= nil then
+    local may, held = flight.mayCommand(st, ctx.from, now)
+    if not may then return false, held end
+  end
+
+  ------------------------------------------------------------------------------
+  if cmd.type == "alt" then
+    -- Raising and lowering a ship without giving it anywhere to go. Absolute
+    -- with `alt`, relative with `by`, and it works from the pad as well as in
+    -- the air -- "take off and hover at 140" is the commonest thing anybody
+    -- wants and there was no way to say it.
+    local want
+    if tonumber(cmd.alt) then
+      want = tonumber(cmd.alt)
+    elseif tonumber(cmd.by) then
+      -- Relative to where the ship is *going*, not where it is, so two taps of
+      -- up in quick succession move it twenty blocks rather than racing the
+      -- climb and moving it ten.
+      local base = st.alt or (ctx.fix and ctx.fix.alt)
+      if not base then return false, "no altitude to move from" end
+      want = base + tonumber(cmd.by)
+    else
+      return false, "no altitude"
+    end
+
+    local ceiling = tonumber(limits.ceiling) or config.maxAlt
+    local floor   = tonumber(limits.floor) or config.minAlt
+    if want > ceiling then want = ceiling end
+    if want < floor then want = floor end
+
+    local was = st.alt
+    st.alt = want
+    claim(st, ctx, now)
+
+    -- Parked ships take off for this. Anything already flying simply changes
+    -- what it is holding, and a ship on a leg keeps the leg -- it is a change of
+    -- cruise altitude, not a change of mind.
+    if not flight.airborne(st) then
+      local event = goTo(st, "preflight", "alt", now)
+      return true, event or { what = "alt", from = was, to = want, why = "alt" }
+    end
+
+    return true, { what = "alt", from = was, to = want, why = "alt" }
   end
 
   ------------------------------------------------------------------------------
@@ -201,6 +322,7 @@ function flight.command(st, cmd, ctx, now)
     end
 
     st.bingo = false
+    claim(st, ctx, now)
     local event = goTo(st, flight.airborne(st) and "cruise" or "preflight",
                        "fly", now)
     return true, event
@@ -209,6 +331,7 @@ function flight.command(st, cmd, ctx, now)
   ------------------------------------------------------------------------------
   if cmd.type == "hold" then
     if not flight.airborne(st) then return false, "not flying" end
+    claim(st, ctx, now)
     return true, goTo(st, "loiter", "manual", now)
   end
 
@@ -219,6 +342,8 @@ function flight.command(st, cmd, ctx, now)
     if cmd.type == "dock" and not pad then
       return false, "no pad named " .. tostring(cmd.pad)
     end
+
+    claim(st, ctx, now)
 
     if pad then
       -- Landing somewhere else is a flight, so it becomes one. The difference
@@ -254,6 +379,7 @@ function flight.command(st, cmd, ctx, now)
     -- "put it down now", and a controlled descent is what that has to mean when
     -- the alternative is a falling building.
     st.plan = nil
+    claim(st, ctx, now)
     return true, goTo(st, "emergency", "manual", now)
   end
 
@@ -556,13 +682,14 @@ function flight.step(st, fix, ctx, now)
     -- that would otherwise be discovered in the air.
     local problem = nil
 
-    if not st.plan then
-      problem = "no plan"
+    if not st.plan and not st.alt then
+      problem = "nowhere to go and no altitude"
     elseif not st.alt then
       problem = "no cruise altitude"
     elseif not fix.usable then
       problem = "no fix"
-    elseif fix.burn and ctx.home and (ctx.waypoints or {})[ctx.home] then
+    elseif st.plan and fix.burn and ctx.home and (ctx.waypoints or {})[ctx.home] then
+      -- Only a plan can be too long for the fuel. "Go up twenty blocks" cannot.
       local eta = nav.eta(nav.remaining(st.plan, fix), cruise)
       if eta and fix.burn < eta * config.fuelReserve then
         problem = "not enough fuel for the plan"
@@ -571,6 +698,7 @@ function flight.step(st, fix, ctx, now)
 
     if problem then
       st.plan = nil
+      st.alt = nil
       emit(goTo(st, "idle", problem, now))
       goal = { release = true }
     else
@@ -735,6 +863,8 @@ function flight.describe(st, fix)
     alt   = st.alt,
     bingo = st.bingo,
     tilt  = fix and fix.tilt or nil,
+    commander     = st.commander,
+    commanderName = st.commanderName,
     left  = st.plan and fix and nav.remaining(st.plan, fix) or nil,
   }
 end

@@ -79,6 +79,7 @@ local function broadcast()
       pos = s.tlm.pos, alt = s.tlm.alt, heading = s.tlm.heading,
       speed = s.tlm.speed, burn = s.tlm.burn, flight = s.tlm.flight,
       source = s.tlm.source,
+      commander = s.tlm.commander, commanderName = s.tlm.commanderName,
     }
   end
 
@@ -119,6 +120,7 @@ local function drawShips(w, h)
   ui.at(24, 2, "  alt", ui.theme.bg, ui.theme.panel)
   ui.at(31, 2, " spd", ui.theme.bg, ui.theme.panel)
   if w > 40 then ui.at(37, 2, "doing", ui.theme.bg, ui.theme.panel) end
+  if w >= 50 then ui.at(w - 11, 2, "flown by", ui.theme.bg, ui.theme.panel) end
 
   fleet.rows = ui.list()
   for _, ship in ipairs(list) do
@@ -155,8 +157,17 @@ local function drawShips(w, h)
     if w > 40 then
       -- The reason, when there is one, is the most useful thing on the line.
       local why = flight.guard or flight.leg or flight.why
-      ui.at(37, y, ui.fit(why or "-", w - 38, true),
+      local room = w - 38
+      -- ...unless somebody is flying it by hand, in which case who they are is
+      -- the thing you need before you touch anything.
+      if flight.commanderName and w >= 50 then room = room - 12 end
+      ui.at(37, y, ui.fit(why or "-", math.max(1, room), true),
             flight.guard and ui.guardColour(flight.guard) or ui.theme.dim, bg)
+
+      if flight.commanderName and w >= 50 then
+        ui.at(w - 11, y, ui.fit(flight.commanderName, 11, true),
+              ui.theme.select, bg)
+      end
     end
   end)
 end
@@ -547,6 +558,13 @@ local function handle(from, msg)
       net.send(from, { type = "error", reason = "no command" })
       return
     end
+
+    -- Stamped with whoever actually sent it, so a ship holds the conn for the
+    -- person at the pocket computer rather than for this tower. Without it every
+    -- relayed order would look like it came from the same place and one person
+    -- taking control would silently give it to everybody.
+    body.sender = body.sender or from
+    body.who = body.who or msg.who
 
     local sent = 0
     for _, s in ipairs(roster()) do
