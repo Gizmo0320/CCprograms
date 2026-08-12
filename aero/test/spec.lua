@@ -296,6 +296,179 @@ do
 end
 
 --------------------------------------------------------------------------------
+section("terrain")
+--------------------------------------------------------------------------------
+
+-- What the fleet has learned about the ground, and the one rule the whole module
+-- is built on: unknown stays unknown. A map that answered "sixty-four" for
+-- ground it had never seen would look like knowledge and fly ships into hills.
+do
+  local terrain = require("lib.terrain")
+  local config = require("lib.config")
+
+  local map = terrain.new(8)
+  check(terrain.size(map) == 0, "a new map knows nothing")
+  check(terrain.at(map, 0, 0) == nil, "and says so, rather than saying zero")
+
+  terrain.note(map, 0, 0, 64, 1)
+  check(terrain.at(map, 0, 0) == 64, "a sample is remembered")
+  check(terrain.at(map, 3, 3) == 64, "across its whole cell", terrain.at(map, 3, 3))
+  check(terrain.at(map, 40, 0) == nil, "and no further")
+
+  -- The highest reading a cell ever gave, never the last. A ship passing over
+  -- the gap between two towers must not erase what it learned about the towers.
+  terrain.note(map, 1, 1, 90, 2)
+  check(terrain.at(map, 0, 0) == 90, "a higher reading wins", terrain.at(map, 0, 0))
+  terrain.note(map, 2, 2, 70, 3)
+  check(terrain.at(map, 0, 0) == 90,
+        "and a lower one does not lower it", terrain.at(map, 0, 0))
+
+  -- Along a leg.
+  local flat = terrain.new(8)
+  for z = 0, 200, 4 do terrain.note(flat, 0, z, 64, 1) end
+
+  local highest, coverage, gap = terrain.along(flat, { x = 0, z = 0 },
+                                               { x = 0, z = 200 })
+  check(highest == 64, "a surveyed leg reports its ground", highest)
+  check(coverage > 0.95, "with full coverage", coverage)
+  check(gap == 0, "and no gaps", gap)
+
+  terrain.note(flat, 0, 100, 140, 2)
+  check(terrain.along(flat, { x = 0, z = 0 }, { x = 0, z = 200 }) == 140,
+        "a hill anywhere on the leg is the answer for the whole leg")
+
+  -- A route nobody has flown.
+  local blind = terrain.new(8)
+  local none, noCover, bigGap = terrain.along(blind, { x = 0, z = 0 },
+                                              { x = 0, z = 200 })
+  check(none == nil, "an unsurveyed leg has no height, not a default height")
+  check(noCover == 0, "no coverage", noCover)
+  check(bigGap > 150, "and one enormous gap", bigGap)
+
+  -- The case coverage alone would wave through: mostly known, with the hole
+  -- exactly where the mountain is.
+  local holed = terrain.new(8)
+  for z = 0, 400, 4 do
+    if z < 150 or z > 260 then terrain.note(holed, 0, z, 64, 1) end
+  end
+  local h2, c2, g2 = terrain.along(holed, { x = 0, z = 0 }, { x = 0, z = 400 })
+  check(c2 > 0.6, "a route can be mostly surveyed", ("%.2f"):format(c2))
+  check(g2 > config.surveyGap, "and still have an unacceptable hole in it", g2)
+  check(terrain.surveyed(c2, g2) == false,
+        "which is not a surveyed route, whatever the coverage says")
+  check(terrain.surveyed(1, 0) == true, "a genuinely covered one is")
+
+  -- A safe altitude, and the refusal to invent one.
+  check(terrain.safe(100, 12) == 112, "safe altitude clears the ground")
+  check(terrain.safe(nil, 12) == nil,
+        "and there is none without ground to clear -- no default, because a "
+        .. "default is a guess wearing a number")
+
+  -- A whole plan is planned against the worst of it: one cruise altitude has to
+  -- clear every leg.
+  local nav = require("lib.nav")
+  local waypoints = {}
+  nav.put(waypoints, { name = "a", x = 0, y = 64, z = 100 })
+  nav.put(waypoints, { name = "b", x = 0, y = 64, z = 300 })
+
+  local hills = terrain.new(8)
+  for z = 0, 400, 4 do terrain.note(hills, 0, z, 64, 1) end
+  terrain.note(hills, 0, 250, 180, 2)          -- on the second leg
+
+  local plan = nav.plan(waypoints, { "a", "b" }, 100)
+  local worst = terrain.forPlan(hills, plan, { x = 0, z = 0 })
+  check(worst == 180, "a plan is planned against the worst of every leg", worst)
+
+  -- Bounded, like the log. This is the one thing that grows with every block
+  -- ever flown over.
+  local big = terrain.new(8)
+  for i = 1, config.terrainCells + 50 do
+    terrain.note(big, i * 16, 0, 64, i)
+  end
+  check(terrain.size(big) <= config.terrainCells, "the map is bounded",
+        terrain.size(big))
+  check(terrain.at(big, (config.terrainCells + 50) * 16, 0) == 64,
+        "keeping the newest")
+
+  -- Round trip, because it goes to disk and over the wire.
+  local saved = terrain.load({ cell = 8, cells = { ["0,0"] = { h = 77, at = 1 } } })
+  check(terrain.at(saved, 4, 4) == 77, "a map survives being reloaded")
+  check(terrain.size(terrain.load(nil)) == 0, "and a missing one is empty")
+  check(terrain.size(terrain.load({ cells = "nonsense" })) == 0,
+        "and so is a corrupt one, rather than a crash on a flight computer")
+end
+
+--------------------------------------------------------------------------------
+section("flight: planning against the ground")
+--------------------------------------------------------------------------------
+
+do
+  local nav     = require("lib.nav")
+  local flight  = require("lib.flight")
+  local terrain = require("lib.terrain")
+
+  local waypoints = {}
+  nav.put(waypoints, { name = "far", x = 0, y = 64, z = 400 })
+
+  local limits = { cruise = 12, climb = 4, descend = 3, clearance = 10 }
+
+  local function fix(t)
+    local f = { x = 0, y = 64, z = 0, alt = 64, heading = 0, speed = 0, vs = 0,
+                usable = true, levelled = true, clearance = 0, burn = 9999 }
+    for k, v in pairs(t or {}) do f[k] = v end
+    return f
+  end
+
+  -- A ridge at 180 across a route somebody wants to fly at 100.
+  local map = terrain.new(8)
+  for z = 0, 400, 4 do terrain.note(map, 0, z, 64, 1) end
+  for z = 190, 230, 4 do terrain.note(map, 0, z, 180, 1) end
+
+  local ctx = { waypoints = waypoints, limits = limits, terrain = map }
+
+  local st = flight.new()
+  flight.command(st, { type = "fly", names = { "far" }, alt = 100 }, ctx, 0)
+  check(st.alt == 100, "a flight is planned at the altitude asked for", st.alt)
+
+  local _, _, events = flight.step(st, fix(), ctx, 1)
+  check(st.alt >= 190, "and preflight raises it to clear the known ridge", st.alt)
+  check(st.state == "takeoff", "then goes", st.state)
+
+  local said = nil
+  for _, e in ipairs(events) do if e.why == "terrain" then said = e end end
+  check(said ~= nil, "saying why, because a ship that silently changed the "
+        .. "altitude you typed would be alarming")
+
+  -- It only ever raises. A map saying a hill is *absent* is not something a map
+  -- built from where ships happened to fly can honestly say.
+  st = flight.new()
+  flight.command(st, { type = "fly", names = { "far" }, alt = 300 }, ctx, 0)
+  flight.step(st, fix(), ctx, 1)
+  check(st.alt == 300, "and never lowers one", st.alt)
+
+  -- An unsurveyed route is flown as asked, because refusing would ground the
+  -- fleet everywhere it has not already been.
+  local blind = terrain.new(8)
+  st = flight.new()
+  flight.command(st, { type = "fly", names = { "far" }, alt = 100 },
+                 { waypoints = waypoints, limits = limits, terrain = blind }, 0)
+  flight.step(st, fix(), { waypoints = waypoints, limits = limits,
+                           terrain = blind }, 1)
+  check(st.alt == 100, "an unsurveyed route is flown at the altitude given",
+        st.alt)
+  check(st.state == "takeoff", "and is not refused for being unknown", st.state)
+
+  -- No map at all -- a fleet with no tower, or one that has never flown -- is
+  -- the same case and must not crash.
+  st = flight.new()
+  flight.command(st, { type = "fly", names = { "far" }, alt = 100 },
+                 { waypoints = waypoints, limits = limits }, 0)
+  local ok = pcall(flight.step, st, fix(),
+                   { waypoints = waypoints, limits = limits }, 1)
+  check(ok, "no map at all is survivable")
+end
+
+--------------------------------------------------------------------------------
 section("instruments")
 --------------------------------------------------------------------------------
 
@@ -2096,6 +2269,156 @@ do
 
   _G.redstone = nil
   _G.peripheral = realPeripheral
+end
+
+--------------------------------------------------------------------------------
+section("beacon")
+--------------------------------------------------------------------------------
+
+-- A waypoint that stands still. Driven the way the program suites drive their
+-- programs -- queue the events, run the real thing, read the wire -- because a
+-- beacon is small enough that the interesting parts are all in what it puts on
+-- the network.
+do
+  local mock   = require("test.mockperipheral")
+  local config = require("lib.config")
+  local net    = require("lib.net")
+
+  local realOpen, realSend, realBroadcast = net.open, net.send, net.broadcast
+  local realClock, realGps = os.clock, _G.gps
+  local realTimer, realCancel = os.startTimer, os.cancelTimer
+  local realLabel = os.getComputerLabel()
+
+  local clock = 0
+  os.clock = function() return clock end
+  os.startTimer = function() return 1 end
+  os.cancelTimer = function() end
+
+  local function runBeacon(opts)
+    opts = opts or {}
+
+    local w = mock.new{}
+    if opts.eye ~= false then
+      -- Pointing up. The beacon's own y is the ground, so what it cannot know
+      -- without help is what is standing above it -- and what is above it is not
+      -- moving, which is why this is the fixed sensor rather than the raycasting
+      -- one a ship carries.
+      w.opticalFixed("optical_sensor_0", { distance = opts.ceiling })
+    end
+    if opts.pad then w.dockPort("docking_connector_0") end
+    _G.peripheral = w.api
+
+    _G.gps = { locate = function()
+      if opts.noGps then return nil end
+      return 40, 70, 300
+    end }
+
+    local casts = {}
+    net.open = function() net.channel, net.id = config.channel, 5 return "back" end
+    net.send = function() return true end
+    net.broadcast = function(msg) casts[#casts + 1] = msg return true end
+
+    fs.delete("/beacon.state")
+    if opts.kind then
+      writeFile("/beacon.state", textutils.serialize({ kind = opts.kind }))
+    end
+
+    for _, e in ipairs(opts.script or {}) do os.queueEvent(table.unpack(e)) end
+    os.queueEvent("key", keys.q)
+
+    -- Snapshot on every pullEvent: beacon.lua clears the terminal on its way
+    -- out, so anything read afterwards is the goodbye message. Same trap the two
+    -- UI suites document.
+    local win = window.create(term.current(), 1, 1, 51, 19, true)
+    local realPull = os.pullEvent
+    local screen = {}
+    os.pullEvent = function(...)
+      local lines = {}
+      for y = 1, 19 do lines[#lines + 1] = win.getLine(y) end
+      screen = lines
+      return realPull(...)
+    end
+
+    local old = term.redirect(win)
+    local ok, err = pcall(dofile, "/beacon.lua")
+    term.redirect(old)
+    os.pullEvent = realPull
+
+    net.open, net.send, net.broadcast = realOpen, realSend, realBroadcast
+    return { ok = ok, err = err, casts = casts, world = w, screen = screen }
+  end
+
+  local r = runBeacon{}
+  check(r.ok, "a beacon runs", r.err)
+
+  local said = nil
+  for _, msg in ipairs(r.casts) do
+    if msg.type == "beacon" then said = msg end
+  end
+  check(said ~= nil, "and announces itself unprompted")
+  check(said and said.x == 40 and said.z == 300,
+        "at the position GPS gave it", said and said.x)
+  check(said and said.name ~= nil, "with a name", said and said.name)
+  check(said and said.ground == 70,
+        "reporting the ground, which is its own height", said and said.ground)
+
+  -- The measurement that makes it more than a coordinate. The sensor points up,
+  -- so a beacon under a canopy reports the canopy -- and a route through it gets
+  -- planned over the top rather than into it.
+  local under = runBeacon{ ceiling = 16 }
+  local roofed = nil
+  for _, msg in ipairs(under.casts) do
+    if msg.type == "beacon" then roofed = msg end
+  end
+  check(roofed and roofed.obstruction and roofed.obstruction > roofed.ground,
+        "something overhead is reported above the ground",
+        roofed and roofed.obstruction)
+
+  -- No sensor: it is a named place, not a measured one, and it must say so
+  -- rather than quietly claiming open sky.
+  local blind = runBeacon{ eye = false }
+  local plain = nil
+  for _, msg in ipairs(blind.casts) do
+    if msg.type == "beacon" then plain = msg end
+  end
+  check(plain ~= nil, "a beacon with no sensor still registers")
+  check(plain and plain.obstruction == plain.ground,
+        "and claims nothing above the ground it stands on",
+        plain and plain.obstruction)
+
+  -- No position is the one thing it must not paper over: a beacon that guessed
+  -- would send every route through the wrong place.
+  local lost = runBeacon{ noGps = true }
+  local anything = nil
+  for _, msg in ipairs(lost.casts) do
+    if msg.type == "beacon" then anything = msg end
+  end
+  check(anything == nil, "a beacon with no position announces nothing at all")
+
+  local onScreen = false
+  for _, line in ipairs(lost.screen) do
+    if tostring(line):find("No position", 1, true) then onScreen = true end
+  end
+  check(onScreen, "and says why on its own screen", lost.screen[2])
+
+  -- It answers when asked, so a tower that has just booted does not wait out
+  -- the beat.
+  local asked = runBeacon{
+    script = { { "modem_message", "back", config.channel, config.channel,
+                 { aero = config.protocol, from = 9, to = "*",
+                   body = { type = "beacon?" } } } },
+  }
+  local replies = 0
+  for _, msg in ipairs(asked.casts) do
+    if msg.type == "beacon" then replies = replies + 1 end
+  end
+  check(replies >= 2, "a beacon answers a roll call", replies)
+
+  os.clock, _G.gps = realClock, realGps
+  os.startTimer, os.cancelTimer = realTimer, realCancel
+  os.setComputerLabel(realLabel)
+  _G.peripheral = realPeripheral
+  fs.delete("/beacon.state")
 end
 
 --------------------------------------------------------------------------------

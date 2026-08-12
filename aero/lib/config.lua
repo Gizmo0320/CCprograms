@@ -32,7 +32,13 @@ config.protocol = "aero"
 -- hardware cannot tell a pilot from a server -- both are plain computers -- so
 -- install.lua asks and records the answer rather than guessing at every boot.
 --
--- "pilot" | "server". A pocket computer ignores this and is always the remote.
+-- "pilot" | "server" | "beacon". A pocket computer ignores this and is always
+-- the remote.
+--
+-- A beacon is a computer standing in the world being a waypoint. It is a role
+-- rather than a program you remember to run, so that one placed in a chunk that
+-- unloads comes back by itself -- a waypoint that vanishes when nobody is
+-- looking at it is not a waypoint.
 config.role = "pilot"
 
 --------------------------------------------------------------------------------
@@ -148,6 +154,42 @@ config.altStep = 10
 -- next four minutes climbing out of sight.
 config.maxAlt = 320
 config.minAlt = -60
+
+--------------------------------------------------------------------------------
+-- Surveying
+--------------------------------------------------------------------------------
+
+-- How big a square of ground one remembered cell covers (blocks).
+--
+-- Eight is a compromise. A ship at cruise samples every couple of blocks so a
+-- cell fills in one pass, and a cell holds the *highest* ground in it, so a
+-- route clipping the corner of one is planned against the worst of it. Smaller
+-- cells remember more detail and fill far more slowly; larger ones make every
+-- route look like it crosses a plateau.
+config.terrainCell = 8
+
+-- How many cells the tower keeps. The map is the one thing here that grows with
+-- every block ever flown over, and a computer that fills its disk stops being
+-- able to write its state file at all -- the same reasoning as the log's bound,
+-- with a bigger number because a cell is smaller than an entry.
+config.terrainCells = 3000
+
+-- How far above the highest known ground a route is planned (blocks). Enough to
+-- clear a tree standing on the hill the map remembers.
+config.surveyMargin = 12
+
+-- How much of a route must be known before its survey is trusted at all, and
+-- the longest unsurveyed stretch tolerated inside it (blocks).
+--
+-- Both, because they catch different lies. Coverage alone passes a route that is
+-- ninety per cent known with one enormous hole in the middle, and the hole is
+-- exactly where the mountain is.
+config.surveyCoverage = 0.6
+config.surveyGap = 64
+
+-- How often a beacon announces itself (seconds). Slower than a ship's heartbeat:
+-- a beacon is a rock and its position is not news.
+config.beaconEvery = 10
 
 --------------------------------------------------------------------------------
 -- Who is flying

@@ -363,6 +363,88 @@ do
 end
 
 --------------------------------------------------------------------------------
+section("beacons and surveying")
+--------------------------------------------------------------------------------
+
+do
+  local BEACON = 21
+
+  -- A waypoint that stands still and registers itself, so nobody has to walk
+  -- there with a pocket computer.
+  local r = runServer{
+    script = {
+      frame(BEACON, { type = "beacon", name = "quarry-pad", x = 40, y = 70,
+                      z = 300, kind = "pad", ground = 70, obstruction = 86 }),
+      frame(POCKET, { type = "net?" }),
+    },
+  }
+
+  local net_ = lastCast(r, "net")
+  check(net_ and net_.waypoints and net_.waypoints["quarry-pad"] ~= nil,
+        "a beacon registers itself as a waypoint")
+  check(net_ and net_.waypoints["quarry-pad"].kind == "pad", "of the kind it says")
+  check(net_ and net_.waypoints["quarry-pad"].beacon == BEACON,
+        "marked as a beacon rather than a point somebody tapped in")
+
+  -- And the part a tapped-in waypoint cannot give: a measurement. A beacon
+  -- under a canopy reports the canopy, so routes are planned over it.
+  local terrain = require("lib.terrain")
+  local map = terrain.load(net_ and net_.terrain)
+  check(terrain.at(map, 40, 300) == 86,
+        "and contributes what is above it to the height map",
+        terrain.at(map, 40, 300))
+
+  -- A beacon with a nonsense name is refused like any other waypoint.
+  local bad = runServer{
+    script = { frame(BEACON, { type = "beacon", name = "bad name!", x = 1,
+                               y = 1, z = 1 }) },
+  }
+  check(replyTo(bad, BEACON, "error") ~= nil, "a bad beacon is refused")
+end
+
+do
+  -- Surveying as a side effect of flying. A ship reporting where it is and how
+  -- far the ground is below it has just measured the ground.
+  local terrain = require("lib.terrain")
+
+  local script = {}
+  for z = 0, 200, 8 do
+    script[#script + 1] = frame(SHIP, {
+      type = "tlm", label = "Kestrel",
+      pos = { x = 0, y = 120, z = z }, alt = 120,
+      -- Ground at 64, except a ridge in the middle.
+      clearance = (z >= 96 and z <= 120) and 20 or 56,
+      flight = { state = "cruise" },
+    })
+  end
+  script[#script + 1] = frame(POCKET, { type = "net?" })
+
+  local r = runServer{ script = script }
+  local net_ = lastCast(r, "net")
+  local map = terrain.load(net_ and net_.terrain)
+
+  check(terrain.size(map) > 0, "flying over ground surveys it", terrain.size(map))
+  check(terrain.at(map, 0, 0) == 64, "recording the ground, not the altitude",
+        terrain.at(map, 0, 0))
+  check(terrain.at(map, 0, 104) == 100, "including the ridge",
+        terrain.at(map, 0, 104))
+
+  local highest = terrain.along(map, { x = 0, z = 0 }, { x = 0, z = 200 })
+  check(highest == 100, "so the route now knows its worst point", highest)
+
+  -- ...and it survives a restart, because a survey you have to redo every time
+  -- the tower reboots is not a survey.
+  local reopened = runServer{
+    state = { waypoints = {}, routes = {}, log = {}, home = nil,
+              terrain = net_ and net_.terrain },
+    script = { frame(POCKET, { type = "net?" }) },
+  }
+  local again = terrain.load(lastCast(reopened, "net").terrain)
+  check(terrain.at(again, 0, 104) == 100, "the map is kept across a restart",
+        terrain.at(again, 0, 104))
+end
+
+--------------------------------------------------------------------------------
 section("the log")
 --------------------------------------------------------------------------------
 

@@ -11,7 +11,7 @@
 --   install <branch> <owner/repo>
 --   install --net=north          name the network without being asked
 --   install --channel=4300       set the modem channel without being asked
---   install --role=server        pilot | server
+--   install --role=server        pilot | server | beacon
 --   install --name=Kestrel       name this computer without being asked
 --
 -- Pass the flags for an unattended install: without them the prompts wait for a
@@ -235,10 +235,11 @@ if isPocket then
 elseif not ROLE then
   print()
   local current = existing.role or DEFAULT_ROLE
-  say("Is this a pilot or the tower?", colours.yellow)
+  say("Is this a pilot, the tower, or a beacon?", colours.yellow)
   say("A pilot rides the contraption and flies it. The", colours.white)
   say("tower holds the waypoints and the log, and there", colours.white)
-  say("is one of it.", colours.white)
+  say("is one of it. A beacon stands still and is a", colours.white)
+  say("waypoint: put one where you want ships to go.", colours.white)
   say("Enter for '" .. current .. "':", colours.yellow)
   term.setTextColour(colours.white)
   ROLE = read()
@@ -247,7 +248,9 @@ end
 ROLE = tostring(ROLE or ""):lower():gsub("%s", "")
 if ROLE == "tower" then ROLE = "server" end
 if ROLE == "ship" then ROLE = "pilot" end
-if ROLE ~= "pilot" and ROLE ~= "server" and ROLE ~= "remote" then
+if ROLE == "waypoint" then ROLE = "beacon" end
+if ROLE ~= "pilot" and ROLE ~= "server" and ROLE ~= "remote"
+   and ROLE ~= "beacon" then
   ROLE = existing.role or DEFAULT_ROLE
 end
 
@@ -322,6 +325,14 @@ elseif ROLE == "server" then
   say("An ender modem here is worth it -- range is what", colours.white)
   say("decides whether you hear about a diversion now or", colours.white)
   say("when the ship lands.", colours.white)
+end
+
+if ROLE == "beacon" then
+  print()
+  say("A beacon needs GPS to know where it is. Give it", colours.yellow)
+  say("an optical sensor pointing UP and it will also", colours.yellow)
+  say("report how high the trees or roof above it reach,", colours.yellow)
+  say("so routes through here are planned over them.", colours.yellow)
 end
 
 if ROLE == "pilot" then

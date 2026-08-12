@@ -12,9 +12,11 @@ Three programs, one install:
 | `pilot.lua` | a computer riding the contraption | Flies it. Owns the plan and every guard |
 | `server.lua` | an advanced computer at base | Fleet roster, waypoints, the log, a monitor dashboard and a map |
 | `remote.lua` | an advanced pocket computer | Fleet, fly, nav, log |
+| `beacon.lua` | a computer standing where you want a waypoint | Registers itself, and measures what is above it |
 
 Plus `probe.lua`, which looks at what is bolted to the hull and writes a
-`/craft.cfg` to start from.
+`/craft.cfg` to start from, and `beacon.lua`, a computer you place in the world
+to *be* a waypoint.
 
 **Every ship is autonomous.** The tower and the pocket set goals; they never fly
 anything. Switch the tower off, break it, let its chunk unload — the ships carry
@@ -579,6 +581,65 @@ dangerous of the two and should not be what happens when you tap a list you were
 reading. Home cannot be deleted at all — a ship already out there is relying on
 it.
 
+## Waypoint computers
+
+A **beacon** is a computer you place where you want a waypoint. Install it with
+the `beacon` role and it comes up on its own after a chunk reload — a waypoint
+that vanishes when nobody is looking at it is not a waypoint.
+
+It needs a wireless modem and **GPS**. It will not announce itself without a
+position: a beacon that guessed would send every route through the wrong place,
+and its screen says so rather than pretending.
+
+Give it an **optical sensor pointing up** and it becomes worth more than a
+coordinate. The beacon's own height is the ground it stands on; the sensor
+measures how high the trees, the roof or the platform above it reach. That
+number goes into the height map, so a route through this waypoint is planned
+*over* whatever is there rather than into it. Without a sensor it still
+registers, and says on its own screen that it is a named place and not a
+measured one.
+
+Add a **docking connector** and it reports whether the pad is occupied.
+
+A beacon commands nothing and holds no conn. Break every one in the world and
+the fleet still flies; it just plans against less.
+
+## Surveying
+
+Ships survey as a side effect of flying. Every telemetry frame carries where the
+ship is and how far the ground is below it — which is a measurement — and the
+tower folds it into a coarse height map. **So the second flight over a route
+knows what the first one found out.**
+
+Before taking off, `preflight` checks the route against that map and **raises**
+the cruise altitude if the ground needs it, logging `terrain` when it does.
+
+It only ever raises, and that asymmetry is the point. A map built from wherever
+ships happened to fly can say a hill *is* there. It can never honestly say a hill
+is *not* — nobody may have looked. Lowering an altitude on that basis would be
+trusting an absence of evidence.
+
+On the **fly** tab, a route you are building shows one of:
+
+```
+ route needs 190
+ route not surveyed
+```
+
+The second is not a fault. It means nobody has been that way, so the guards are
+all you have — fly it high.
+
+Two things keep it honest. A cell holds the **highest** ground ever seen in it,
+never the latest, so a ship passing over the gap between two towers cannot erase
+what it learned about the towers. And a route is only treated as surveyed if
+coverage is good enough **and** its longest unsurveyed stretch is short enough —
+coverage alone would wave through a route that is ninety per cent known with one
+enormous hole in the middle, and the hole is exactly where the mountain is.
+
+The map is bounded like the log, kept across restarts, and cached by ships — so
+one already in the air can still check its own route with the tower's chunk
+unloaded.
+
 ## Guards
 
 Seven rules outrank the flight plan. All are checked every sweep, in this order,
@@ -698,6 +759,9 @@ Also in the game, as `guide` → *When it goes wrong*.
 | Stops and climbs for no visible reason | The obstacle or clearance guard. The log says which. |
 | Drifts into a cliff while climbing | Expected, and documented above: a ship has no brakes. Raise `config.reaction`. |
 | Nothing on the **nav** tab | Waypoints live on the tower. Without one, the pocket shows only what ships have cached. |
+| A beacon shows **No position** | It has no GPS fix. It will not guess, because every route through it would then go to the wrong place. |
+| Route says **not surveyed** | Nobody has flown it. Not a fault — fly it high, and it will be surveyed for next time. |
+| A ship took off higher than you asked | The route's survey needed it. The log says `terrain`. |
 | `update` refused | The ship is airborne. Land it first — this is deliberate. |
 | An order is refused, naming somebody | They have control. `TAKE control` on the ship's panel, or wait 90s for it to lapse. |
 | Altitude order refused on a parked ship | It has no altitude to move *from* and none was given. Send an absolute altitude, or check it has an altitude sensor. |
@@ -718,7 +782,7 @@ Results are written to `/test-summary.txt` and `/test-*-results.txt` on the
 emulated computer rather than stdout, because headless mode redraws the entire
 terminal on every update.
 
-787 assertions. `spec.lua` covers each module on its own — the heading
+850 assertions. `spec.lua` covers each module on its own — the heading
 arithmetic and the wrap, plans and legs, sensor fusion and the ageing of a
 dead-reckoned fix, the PID loops and the integral clamp, every flight state and
 all four guards, the hull abstraction over a mock of the real peripheral API, the

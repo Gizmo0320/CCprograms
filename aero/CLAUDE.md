@@ -14,7 +14,8 @@ contraptions:
   fly, nav, log.
 
 Plus `probe.lua`, a hardware survey that writes a starter `/craft.cfg` from what
-is actually attached to the hull.
+is actually attached to the hull, and `beacon.lua` -- a computer placed in the
+world that registers itself as a waypoint and measures what is standing above it.
 
 All communicate over a raw modem channel via `lib/net.lua` — not rednet. The
 channel is configurable per network, which is what lets several independent
@@ -440,6 +441,40 @@ failing because of it.
 
 `tune` needs the conn too: two people moving the same gain in opposite directions
 is the same problem with a slower fuse.
+
+### Surveying, and lib/terrain.lua
+
+The guards are reflexes: clearance looks down, obstacle looks forward, and both
+fire when the ground is already close. Neither can say before departure that a
+route needs a hundred and forty rather than a hundred. `lib/terrain.lua` can, for
+ground somebody has flown over.
+
+Ships survey by existing. Telemetry already carries position and clearance, so
+`altitude - clearance` is a ground sample the tower gets for free on every frame.
+
+The whole module is built on one rule: **unknown stays unknown**. A cell nobody
+has crossed has no height, not a height of zero, and `along` returns coverage and
+the longest gap beside the answer. A map that replied "sixty-four" for terrain it
+had never seen would look like knowledge and fly ships into hills.
+
+Three decisions follow from it:
+
+- A cell keeps the **highest** reading it ever gave, never the latest. A ship
+  passing over the gap between two towers must not erase the towers.
+- `surveyed` tests coverage **and** the longest gap. Coverage alone passes a
+  route that is ninety per cent known with one hole in it, and the hole is where
+  the mountain is.
+- Preflight only ever **raises** an altitude. A map built from where ships
+  happened to fly can say a hill is present; it can never honestly say one is
+  absent, so lowering on its word would be trusting an absence of evidence.
+
+Bounded like the log, for the same reason -- it grows with every block ever flown
+over -- and evicted oldest-first, because ground under a route nobody flies any
+more matters less than ground under one they do.
+
+Beacons feed the same map. A beacon's own y is the ground it stands on, so the
+only thing it needs a sensor for is what is *above* it, and that is the number a
+tapped-in waypoint can never give.
 
 ### State persistence
 

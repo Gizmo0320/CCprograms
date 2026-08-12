@@ -297,6 +297,103 @@ rather than landing in
 a field.
 ]] },
 
+{ title = "Waypoint computers", body = [[
+A BEACON is a computer you
+put where you want a
+waypoint. It registers
+itself with the tower, so
+nobody has to walk there
+with a pocket computer,
+and it does not forget.
+
+Install with the beacon
+role, or set role =
+"beacon" in /aero.cfg.
+
+It needs:
+  a wireless modem
+  GPS
+  an OPTICAL SENSOR
+  POINTING UP (optional)
+
+The sensor is what makes
+it worth more than a
+tapped-in point. The
+beacon's own height is
+the ground; the sensor
+tells it how high the
+trees or the roof above
+it reach. A route through
+here is then planned OVER
+them.
+
+Without a sensor it is
+still a waypoint, and it
+says on its screen that
+it is a named place and
+not a measured one.
+
+Add a docking connector
+and it reports whether
+the pad is occupied.
+
+A beacon commands
+nothing. Break every one
+in the world and the
+fleet still flies -- it
+just plans against less.
+]] },
+
+{ title = "Surveying", body = [[
+Ships survey as they fly.
+Every telemetry frame
+carries where the ship is
+and how far the ground is
+below it, which is a
+measurement, and the
+tower remembers it.
+
+So the second flight over
+a route knows what the
+first one found out.
+
+Before taking off, the
+ship checks the route
+against that map and
+RAISES its cruise
+altitude if the ground
+needs it. The log says
+"terrain" when it does.
+
+It only ever raises. A
+map built from where
+ships happened to fly can
+say a hill IS there. It
+can never honestly say a
+hill is NOT.
+
+On the fly tab you will
+see one of:
+
+  route needs 190
+  route not surveyed
+
+The second is not a
+warning that something is
+wrong. It means nobody
+has been that way yet,
+and the guards are all
+you have. Fly it high.
+
+The map is bounded and
+kept on the tower across
+restarts. Ships cache it,
+so a ship already in the
+air can still check its
+own route with the tower
+unloaded.
+]] },
+
 { title = "Up and down", body = [[
 Altitude has its own
 control. You do not need

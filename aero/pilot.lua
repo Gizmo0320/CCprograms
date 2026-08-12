@@ -37,6 +37,7 @@ local instruments = require("lib.instruments")
 local autopilot   = require("lib.autopilot")
 local nav         = require("lib.nav")
 local flight      = require("lib.flight")
+local terrain     = require("lib.terrain")
 local ui          = require("lib.ui")
 
 local pilot = {
@@ -45,6 +46,7 @@ local pilot = {
   ap        = nil,       -- autopilot state
   fl        = nil,       -- flight state
   waypoints = {},        -- cached from the server, see below
+  terrain   = nil,       -- the fleet's height map, cached the same way
   home      = nil,
   server    = nil,       -- computer id of the server, when one has spoken
   serverAt  = -math.huge,
@@ -284,6 +286,7 @@ local function save()
   state.data.dockTo = pilot.fl.dockTo
   state.data.waypoints = pilot.waypoints
   state.data.home  = pilot.home
+  state.data.terrain = pilot.terrain
 
   -- The redstone signals we are holding. CC does not persist a computer's
   -- outputs, so on a balloon this is the difference between a chunk reloading
@@ -297,6 +300,7 @@ local function restore()
 
   pilot.waypoints = type(d.waypoints) == "table" and d.waypoints or {}
   pilot.home = d.home
+  if type(d.terrain) == "table" then pilot.terrain = terrain.load(d.terrain) end
 
   if type(d.plan) == "table" then
     pilot.fl.plan = d.plan
@@ -353,6 +357,7 @@ local function sweep(t, dt)
     limits    = hull.limits,
     home      = pilot.home,
     cruiseAlt = pilot.fl.alt,
+    terrain   = pilot.terrain,
   }
 
   local _, goal, events = flight.step(pilot.fl, pilot.fix, ctx, t)
@@ -459,6 +464,7 @@ local function handle(from, msg)
     -- the ship refused its own commander his own order.
     from = msg.sender or from,
     who  = msg.who,
+    terrain = pilot.terrain,
   }
 
   ------------------------------------------------------------------------------
@@ -468,6 +474,11 @@ local function handle(from, msg)
     -- pad -- and can still find its way home under the bingo guard.
     if type(msg.waypoints) == "table" then
       pilot.waypoints = msg.waypoints
+    end
+    if type(msg.terrain) == "table" then
+      -- Cached like the waypoints, and for the same reason: a ship that has it
+      -- can check its own route with the tower's chunk unloaded.
+      pilot.terrain = terrain.load(msg.terrain)
     end
     pilot.home = msg.home or pilot.home
     pilot.server, pilot.serverAt = from, now()

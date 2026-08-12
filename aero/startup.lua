@@ -16,6 +16,11 @@ if pocket then
   shell.run("/remote.lua")
 elseif config.role == "server" then
   shell.run("/server.lua")
+elseif config.role == "beacon" then
+  -- A beacon has the most to lose from not restarting: it is the fixed point
+  -- other things navigate by, and one that stayed at the shell after its chunk
+  -- reloaded would quietly stop being a waypoint while still looking like one.
+  shell.run("/beacon.lua")
 else
   -- Hardware cannot tell these apart -- a pilot and a tower are both plain
   -- computers, and the peripherals that would give it away are on the

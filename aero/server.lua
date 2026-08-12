@@ -20,6 +20,7 @@ local state  = require("lib.state")
 local nav    = require("lib.nav")
 local log    = require("lib.log")
 local ui     = require("lib.ui")
+local terrain = require("lib.terrain")
 
 local W, H = term.getSize()
 
@@ -37,6 +38,10 @@ local function now() return os.clock() end
 
 local function waypoints() return state.data.waypoints end
 local function routes() return state.data.routes end
+
+-- What the fleet has learned about the ground. Rebuilt from the state file on
+-- boot and fed by every ship that reports a position and a clearance.
+local map = nil
 
 --------------------------------------------------------------------------------
 -- Roster
@@ -89,6 +94,10 @@ local function broadcast()
     waypoints = waypoints(),
     routes = routes(),
     home = state.data.home,
+    -- The height map rides along. It is the only way a pilot can check its own
+    -- route before setting off, and a ship that has cached it can still do that
+    -- with this computer's chunk unloaded.
+    terrain = map,
   })
 end
 
@@ -253,8 +262,8 @@ local function drawMap(w, h)
   ui.at(w - 1, top, "N", ui.theme.accent)
   ui.at(w - 1, top + 1, "^", ui.theme.accent)
 
-  ui.at(1, bottom + 1, ui.fit(("%.0fm across   + point  = pad  ^ ship")
-        :format(spanX), w, true), ui.theme.dim)
+  ui.at(1, bottom + 1, ui.fit(("%.0fm across   %d cells surveyed")
+        :format(spanX, terrain.size(map)), w, true), ui.theme.dim)
 end
 
 local function drawLog(w, h)
@@ -312,8 +321,14 @@ local function drawNav(w, h)
     ui.at(2, y, ui.fit((home and "*" or " ") .. name, 13, true),
           home and ui.theme.ok or ui.theme.text)
     ui.at(16, y, ui.fit(wp.kind or "point", 6, true), ui.theme.dim)
-    ui.at(23, y, ui.fit(("%d %d %d"):format(wp.x, wp.y or 0, wp.z), w - 24, true),
+    ui.at(23, y, ui.fit(("%d %d %d"):format(wp.x, wp.y or 0, wp.z), w - 36, true),
           ui.theme.dim)
+    -- A beacon is a waypoint that maintains itself, which is worth telling
+    -- apart from one somebody tapped in and may have moved away from.
+    if wp.beacon and w >= 46 then
+      ui.at(w - 12, y, ui.fit(wp.occupied and "pad busy" or "beacon", 12, true),
+            wp.occupied and ui.theme.warn or ui.theme.ok)
+    end
     y = y + 1
   end
 end
@@ -442,7 +457,45 @@ local function handle(from, msg)
       fleet.ships[from], fleet.heard[from] = nil, nil
     else
       fleet.ships[from], fleet.heard[from] = msg, now()
+
+      -- Survey as a side effect of flying. A ship reporting where it is and how
+      -- far the ground is below it has just measured the ground, and that is
+      -- worth remembering: it is the difference between discovering a hill by
+      -- nearly hitting it and knowing about it before setting off.
+      if msg.pos and msg.alt and msg.clearance then
+        if terrain.note(map, msg.pos.x, msg.pos.z, msg.alt - msg.clearance,
+                        now()) then
+          state.mark()
+        end
+      end
     end
+    return
+  end
+
+  ------------------------------------------------------------------------------
+  if msg.type == "beacon" then
+    -- A waypoint that stands still. It registers itself, so nobody has to walk
+    -- there with a pocket computer, and unlike a tapped-in point it can measure
+    -- what is above it.
+    local ok, why = nav.put(waypoints(), {
+      name = msg.name, x = msg.x, y = msg.y, z = msg.z,
+      kind = msg.kind, note = msg.note,
+    })
+
+    if not ok then
+      net.send(from, { type = "error", reason = why })
+      return
+    end
+
+    -- The measurement, which is the part a tapped-in waypoint cannot give. A
+    -- beacon standing under a canopy reports the canopy, so a route through it
+    -- is planned over the top rather than into it.
+    local height = tonumber(msg.obstruction) or tonumber(msg.ground)
+    if height then terrain.note(map, msg.x, msg.z, height, now()) end
+
+    waypoints()[msg.name].beacon = from
+    waypoints()[msg.name].occupied = msg.occupied
+    state.mark()
     return
   end
 
@@ -591,6 +644,8 @@ state.data.waypoints = state.data.waypoints or {}
 state.data.routes    = state.data.routes or {}
 log.load(state.data.log)
 
+map = terrain.load(state.data.terrain)
+
 term.clear()
 term.setCursorPos(1, 1)
 
@@ -634,6 +689,7 @@ while true do
 
   elseif event == "timer" and a == tick then
     tick = os.startTimer(1)
+    state.data.terrain = map
     state.tick(now())
     fleet.note = nil
     redraw()
@@ -693,6 +749,7 @@ while true do
 end
 
 state.data.log = log.entries
+state.data.terrain = map
 state.flush(now())
 
 term.clear()

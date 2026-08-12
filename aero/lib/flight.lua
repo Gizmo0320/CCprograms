@@ -79,6 +79,7 @@
 
 local config = require("lib.config")
 local nav    = require("lib.nav")
+local terrain = require("lib.terrain")
 
 local flight = {}
 
@@ -702,6 +703,27 @@ function flight.step(st, fix, ctx, now)
       emit(goTo(st, "idle", problem, now))
       goal = { release = true }
     else
+      -- Check the route against what the fleet has learned about the ground.
+      --
+      -- This is the one thing the guards cannot do. The clearance and obstacle
+      -- guards are reflexes: they fire when the ground is already close, and
+      -- they cost a climb from cruise every time. Knowing before setting off
+      -- that a route needs a hundred and forty is worth more than surviving a
+      -- hundred, and it is free -- ships surveyed it on the way past.
+      --
+      -- It only ever raises. A survey that lowered a cruise altitude would be
+      -- trusting a map to say a hill is *absent*, which is not something a map
+      -- built from where ships happened to fly can ever honestly say.
+      if st.plan and ctx.terrain then
+        local highest, coverage, gap = terrain.forPlan(ctx.terrain, st.plan, fix)
+        local need = terrain.safe(highest, limits.clearance)
+
+        if need and terrain.surveyed(coverage, gap) and st.alt < need then
+          emit({ what = "alt", from = st.alt, to = need, why = "terrain" })
+          st.alt = need
+        end
+      end
+
       emit(goTo(st, "takeoff", "cleared", now))
       goal = { vs = climb, speed = 0, limits = limits }
     end

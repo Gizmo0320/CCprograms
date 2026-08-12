@@ -49,7 +49,7 @@ directory brings its own mock and runs the real modules against it — 535
 assertions for the mining fleet covering traversal, the fuel and inventory
 guards, crash resume, fleet dispatch, the pocket UI and the scanning pipeline;
 591 for the redstone network covering ports, rules, logic blocks, scenes, all
-three programs' event loops and the installer; and 787 for the flight network
+three programs' event loops and the installer; and 850 for the flight network
 covering the navigation arithmetic, sensor fusion and dead reckoning, the control
 laws, all four flight guards, the three programs and the installer — plus a
 flight model the autopilot is flown against for a few hundred sweeps at a time,

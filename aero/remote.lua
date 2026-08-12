@@ -30,6 +30,7 @@ local net    = require("lib.net")
 local nav    = require("lib.nav")
 local log    = require("lib.log")
 local ui     = require("lib.ui")
+local terrain = require("lib.terrain")
 
 local W, H = term.getSize()
 
@@ -350,7 +351,36 @@ local function buildFly()
     return
   end
 
+  -- What the fleet knows about this route, before anybody flies it. The whole
+  -- point of surveying is being told at the planning stage rather than being
+  -- climbed over the hill by a guard on the day.
+  local need, unsurveyed = nil, false
+  if #plan.names > 0 and link.net and link.net.terrain then
+    local map = terrain.load(link.net.terrain)
+    local built = nav.plan(wp, plan.names, plan.alt)
+    if built then
+      local highest, coverage, gapLength = terrain.forPlan(map, built, wp[plan.names[1]])
+      if terrain.surveyed(coverage, gapLength) then
+        need = terrain.safe(highest, 12)
+      else
+        unsurveyed = true
+      end
+    end
+  end
+
   row({ kind = "head", label = ("alt %d"):format(plan.alt) })
+
+  if need then
+    row({ kind = "note",
+          text = (" route needs %d"):format(need),
+          colour = (plan.alt < need) and ui.theme.bad or ui.theme.ok })
+  elseif unsurveyed then
+    -- Said plainly rather than left blank. "Nobody has flown this" is a
+    -- different thing from "this is clear", and the difference is the one the
+    -- whole height map exists to preserve.
+    row({ kind = "note", text = " route not surveyed",
+          colour = ui.theme.warn })
+  end
   row({ kind = "step", text = "  altitude", click = function(x)
     plan.alt = math.max(0, plan.alt + (((x or 0) >= W - 1) and 10 or -10))
   end })

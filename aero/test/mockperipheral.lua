@@ -337,6 +337,27 @@ function mock.new(opts)
     return d
   end
 
+  --- An optical sensor pointing at something that does not move.
+  --
+  -- What a beacon has: it looks up at a roof, or at nothing. Both the existing
+  -- optical mocks raycast against the terrain from a ship, which is the wrong
+  -- shape for a block standing still under a canopy.
+  function world.opticalFixed(side, opts2)
+    opts2 = opts2 or {}
+    local d = world.add(side, "optical_sensor",
+                        { range = opts2.range or 64, distance = opts2.distance })
+    d.methods = {
+      setRange = function(n) record(d, "setRange", n) d.range = tonumber(n) or d.range end,
+      getRange = function() return d.range end,
+      hasHit = function()
+        return d.distance ~= nil and d.distance <= d.range
+      end,
+      getDistance = function() return d.distance or d.range end,
+      getBlock = function() return "minecraft:oak_log" end,
+    }
+    return d
+  end
+
   --- An optical sensor pointing along the ship's nose.
   --
   -- A real raycast against the terrain function: it steps forward until the
