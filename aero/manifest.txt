@@ -1,0 +1,30 @@
+# Files install.lua downloads, one path per line, relative to aero/.
+#
+# The whole tree goes on every computer -- startup.lua works out what it is
+# running on -- so there is one thing to install and no way to end up with the
+# wrong half on the wrong machine.
+#
+# /aero.cfg and /craft.cfg are deliberately absent. `update` replaces every file
+# listed here, and a hull definition that survived exactly until the first
+# update would be worse than none at all.
+#
+# test/spec.lua checks this list against what is actually in the repo, in both
+# directions, so adding a file and forgetting this line is a test failure rather
+# than an installer that silently ships an incomplete tree.
+
+startup.lua
+update.lua
+probe.lua
+pilot.lua
+server.lua
+remote.lua
+
+lib/config.lua
+lib/net.lua
+lib/state.lua
+lib/log.lua
+lib/hull.lua
+lib/instruments.lua
+lib/autopilot.lua
+lib/nav.lua
+lib/flight.lua

@@ -1,0 +1,1291 @@
+--- Runs the libraries against a mock hull, and against nothing at all.
+--
+-- lib/nav, lib/instruments, lib/autopilot and lib/flight need no mock: they
+-- touch no APIs, which is most of the reason they are shaped that way. lib/hull
+-- is the only module that talks to `peripheral`, so it gets
+-- test/mockperipheral.lua. lib/net gets the mock's modem rather than CraftOS-PC's
+-- own, because the emulated modem reports isWireless() == false and every
+-- program here accepts wireless only.
+--
+-- Results go to /test-results.txt; the terminal in headless mode is unreadable.
+
+local out = {}
+local flush
+local function print(...)
+  local parts = {}
+  for i = 1, select("#", ...) do parts[#parts + 1] = tostring((select(i, ...))) end
+  out[#out + 1] = table.concat(parts, " ")
+  flush()                            -- so an uncaught error still leaves a trail
+end
+function flush()
+  local f = fs.open("/test-results.txt", "w")
+  for _, line in ipairs(out) do f.writeLine(line) end
+  f.close()
+end
+
+local loaded = {}
+function _G.require(name)
+  if loaded[name] then return loaded[name] end
+  local path = "/" .. name:gsub("%.", "/") .. ".lua"
+  local fn, err = loadfile(path)
+  if not fn then error("cannot load " .. path .. ": " .. tostring(err), 0) end
+  local m = fn()
+  loaded[name] = m
+  return m
+end
+
+local pass, fail = 0, 0
+
+-- Put back rather than cleared. install_spec.lua runs last and install.lua
+-- calls peripheral.getNames() to look for a modem; a suite that left the
+-- global nil would break it from three files away.
+local realPeripheral = _G.peripheral
+
+
+--- `quiet` assertions still count, but only show up when they fail. The
+--- fixture's self-checks run before every single case; printing them all buries
+--- the results they exist to protect.
+local function report(ok, label, extra, quiet)
+  if ok then
+    pass = pass + 1
+    if not quiet then print("  ok   " .. label) end
+  else
+    fail = fail + 1
+    print("  FAIL " .. label .. (extra and ("  <" .. tostring(extra) .. ">") or ""))
+  end
+end
+
+local function check(ok, label, extra) report(ok, label, extra, false) end
+local function checkQuiet(ok, label, extra) report(ok, label, extra, true) end
+
+local function section(name)
+  print("")
+  print(name)
+end
+
+--- Did this fail for the reason we meant it to? Every validator here returns
+--- ok, reason, and a check that only looks at `ok` passes just as happily when
+--- the entry was rejected for something else entirely.
+local function refused(ok, reason, text)
+  if ok then return false end
+  if not text then return true end
+  return tostring(reason):find(text, 1, true) ~= nil
+end
+
+--- Floating point comparison. Everything in this program is trigonometry and
+--- integration, and asserting equality on either is asserting that two different
+--- routes to the same number rounded the same way.
+local function near(a, b, tol)
+  if type(a) ~= "number" or type(b) ~= "number" then return false end
+  return math.abs(a - b) <= (tol or 0.001)
+end
+
+local function writeFile(path, body)
+  local f = fs.open(path, "w")
+  f.write(body)
+  f.close()
+end
+
+--------------------------------------------------------------------------------
+section("manifest")
+--------------------------------------------------------------------------------
+
+-- install.lua downloads exactly what manifest.txt lists, so a file added to the
+-- tree and not to the list is an installer that silently ships an incomplete
+-- program -- which shows up as a require() error on somebody's computer rather
+-- than here.
+do
+  local listed, count = {}, 0
+  local f = fs.open("/manifest.txt", "r")
+  while true do
+    local line = f.readLine()
+    if not line then break end
+    line = line:match("^%s*(.-)%s*$")
+    if line ~= "" and line:sub(1, 1) ~= "#" then
+      listed[line] = true
+      count = count + 1
+    end
+  end
+  f.close()
+
+  check(count > 0, "manifest.txt lists something", count)
+
+  local missing = nil
+  for path in pairs(listed) do
+    if not fs.exists("/" .. path) then missing = path end
+  end
+  check(missing == nil, "every file the installer downloads exists", missing)
+
+  -- The other direction. install.lua is deliberately absent: it is fetched by
+  -- `wget run` and is the thing doing the downloading, not one of the downloads.
+  local expected = {}
+  for _, name in ipairs(fs.list("/")) do
+    if name:sub(-4) == ".lua" and name ~= "install.lua" then expected[name] = true end
+  end
+  for _, name in ipairs(fs.list("/lib")) do
+    expected["lib/" .. name] = true
+  end
+
+  local unlisted = nil
+  for path in pairs(expected) do
+    if not listed[path] then unlisted = path end
+  end
+  check(unlisted == nil, "every file in the tree is in the manifest", unlisted)
+end
+
+--------------------------------------------------------------------------------
+section("config")
+--------------------------------------------------------------------------------
+
+do
+  local config = require("lib.config")
+
+  check(config.channel == 1618, "a channel of its own", config.channel)
+  check(config.protocol == "aero", "a protocol name", config.protocol)
+  check(config.channel ~= 3141 and config.channel ~= 2718,
+        "does not collide with the other two suites")
+  check(config.sweep > 0 and config.sweep <= 0.5, "a sweep fast enough for a PID")
+  check(config.heartbeat < config.heartbeatTimeout,
+        "telemetry is sent more often than it is given up on")
+  check(config.heartbeatTimeout < config.staleAfter,
+        "the pocket gives up before the server does")
+end
+
+--------------------------------------------------------------------------------
+section("nav: angles")
+--------------------------------------------------------------------------------
+
+do
+  local nav = require("lib.nav")
+
+  check(nav.norm(370) == 10, "norm folds above 360", nav.norm(370))
+  check(nav.norm(-10) == 350, "norm folds below zero", nav.norm(-10))
+
+  -- The wrap is the whole reason this function exists. A ship on 350 asked for
+  -- 10 must turn 20 right; subtraction says 340 left, and a ship that took the
+  -- long way round every time would look exactly like one with a gain problem.
+  check(nav.turn(350, 10) == 20, "the short way round, upwards", nav.turn(350, 10))
+  check(nav.turn(10, 350) == -20, "the short way round, downwards", nav.turn(10, 350))
+  check(nav.turn(0, 90) == 90, "right is positive")
+  check(nav.turn(0, 270) == -90, "left is negative")
+  check(math.abs(nav.turn(0, 180)) == 180, "half a turn is 180 either way")
+
+  -- Heading is Minecraft yaw: 0 is south (+Z), 90 is west (-X). test/
+  -- mockperipheral.lua's flight model uses the same two formulas, so a
+  -- disagreement here is a ship that flies confidently in the wrong direction.
+  local fx, fz = nav.forward(0)
+  check(near(fx, 0) and near(fz, 1), "heading 0 points at +Z", fx .. "," .. fz)
+
+  fx, fz = nav.forward(90)
+  check(near(fx, -1) and near(fz, 0), "heading 90 points at -X", fx .. "," .. fz)
+
+  local origin = { x = 0, y = 64, z = 0 }
+  check(near(nav.bearing(origin, { x = 0, y = 64, z = 10 }), 0),
+        "bearing to +Z is 0", nav.bearing(origin, { x = 0, y = 64, z = 10 }))
+  check(near(nav.bearing(origin, { x = -10, y = 64, z = 0 }), 90),
+        "bearing to -X is 90", nav.bearing(origin, { x = -10, y = 64, z = 0 }))
+  check(near(nav.bearing(origin, { x = 0, y = 64, z = -10 }), 180),
+        "bearing to -Z is 180", nav.bearing(origin, { x = 0, y = 64, z = -10 }))
+  check(near(nav.bearing(origin, { x = 10, y = 64, z = 0 }), 270),
+        "bearing to +X is 270", nav.bearing(origin, { x = 10, y = 64, z = 0 }))
+
+  check(nav.bearing(origin, origin) == nil, "no bearing to where you already are")
+
+  -- Round trip: fly the bearing and you arrive.
+  local target = { x = -30, y = 64, z = 40 }
+  local b = nav.bearing(origin, target)
+  local bx, bz = nav.forward(b)
+  local d = nav.distance(origin, target)
+  check(near(origin.x + bx * d, target.x, 0.01)
+    and near(origin.z + bz * d, target.z, 0.01),
+        "bearing and forward are inverses", b)
+end
+
+--------------------------------------------------------------------------------
+section("nav: legs and plans")
+--------------------------------------------------------------------------------
+
+do
+  local nav = require("lib.nav")
+
+  check(near(nav.distance({x=0,y=0,z=0}, {x=3,y=99,z=4}), 5),
+        "distance is planar and ignores height")
+
+  -- Positive is right of track. Flying north (heading 180, -Z) from the origin,
+  -- a ship displaced to -X is to the... this is exactly the sign nobody can do
+  -- in their head, which is why it is asserted rather than reasoned about.
+  local from = { x = 0, y = 64, z = 0 }
+  local to   = { x = 0, y = 64, z = 100 }
+  local left = { x = -5, y = 64, z = 50 }
+  local xt = nav.crossTrack(left, from, to)
+  check(near(math.abs(xt), 5), "cross-track measures the offset", xt)
+  check(nav.crossTrack({x=5,y=64,z=50}, from, to) == -xt,
+        "cross-track is signed and symmetric")
+
+  -- Steering closes on the line, not just on the point, and the correction is
+  -- capped so a badly displaced ship turns towards the line rather than
+  -- perpendicular to it.
+  local far = { x = -400, y = 64, z = 50 }
+  local steer = nav.steer(far, from, to, 2)
+  local direct = nav.bearing(far, to)
+  check(math.abs(nav.turn(direct, steer)) <= 45.001,
+        "the cross-track correction is capped", nav.turn(direct, steer))
+
+  local waypoints = {}
+  check(nav.put(waypoints, { name = "quarry", x = 100, y = 70, z = 20 }),
+        "a good waypoint goes in")
+
+  -- Each of these captures both returns first. A call in any position but the
+  -- last is truncated to one value, so `refused(nav.put(...), nil, "name")`
+  -- silently checks the reason against nil and passes for the wrong reason --
+  -- or, as it did here, fails for one.
+  local rejected, why = nav.put(waypoints, { name = "", x = 1, y = 1, z = 1 })
+  check(refused(rejected, why, "name"), "a nameless waypoint is refused", why)
+
+  check(refused(nav.put(waypoints, { name = "bad name!", x = 1, y = 1, z = 1 })),
+        "odd characters are refused")
+
+  rejected, why = nav.put(waypoints, { name = "nowhere" })
+  check(refused(rejected, why, "position"),
+        "a waypoint with no position is refused", why)
+
+  rejected, why = nav.put(waypoints, { name = "pad", x = 1, z = 1, kind = "pad" })
+  check(refused(rejected, why, "height"),
+        "a pad with no height is refused -- you cannot land on an unknown y", why)
+
+  nav.put(waypoints, { name = "base", x = 0, y = 64, z = 0, kind = "pad" })
+  nav.put(waypoints, { name = "ridge", x = 50, y = 90, z = 50 })
+
+  local names = nav.names(waypoints)
+  check(names[1] == "base" and names[#names] == "ridge",
+        "names come back sorted, not in hash order", table.concat(names, ","))
+
+  local near_ = nav.nearest(waypoints, { x = 5, y = 64, z = 5 }, "pad")
+  check(near_ and near_.name == "base", "nearest finds a pad by kind")
+
+  local plan, why = nav.plan(waypoints, { "quarry", "ridge" }, 120)
+  check(plan ~= nil, "a plan over known waypoints", why)
+  check(plan and plan.alt == 120 and #plan.legs == 2 and plan.leg == 1,
+        "the plan starts on its first leg")
+
+  check(refused(nav.plan(waypoints, { "atlantis" })) , "an unknown waypoint is refused")
+
+  local empty, emptyWhy = nav.plan(waypoints, {})
+  check(refused(empty, emptyWhy, "no legs"), "an empty plan is refused", emptyWhy)
+
+  check(nav.current(plan).name == "quarry", "the current leg is the first one")
+
+  local at = { x = 99, y = 70, z = 20 }
+  local next_ = nav.advance(plan, at)
+  check(next_ and next_.name == "ridge", "advance moves on")
+  check(plan.from and plan.from.x == 99,
+        "the new leg starts where the ship actually is, not at the waypoint")
+  check(nav.advance(plan, at) == nil, "advancing past the end gives nil")
+
+  -- The bingo guard's question is "can I finish this", and the distance to the
+  -- next waypoint is not that. A ship two blocks from a waypoint with six
+  -- hundred blocks of plan behind it has fuel for the waypoint and none for the
+  -- plan.
+  local long = nav.plan(waypoints, { "quarry", "ridge", "base" }, 100)
+  local remaining = nav.remaining(long, { x = 99, y = 70, z = 20 })
+  local firstLeg = nav.distance({ x = 99, y = 70, z = 20 }, waypoints.quarry)
+  check(remaining > firstLeg * 5, "remaining follows the whole plan", remaining)
+
+  check(nav.eta(100, 10) == 10, "eta is distance over speed")
+  check(nav.eta(100, 0) == nil, "a stopped ship has no arrival time, not an infinite one")
+end
+
+--------------------------------------------------------------------------------
+section("instruments")
+--------------------------------------------------------------------------------
+
+do
+  local config = require("lib.config")
+  local instruments = require("lib.instruments")
+
+  local blank = instruments.blank()
+  check(blank.usable == false, "a ship that has just booted knows nothing")
+  check(blank.source == "none", "and says so")
+
+  -- A real position wins, and is called what it is.
+  local fix = instruments.fuse(blank,
+    { pos = { x = 10, y = 70, z = 20 }, heading = 90, alt = 70 }, nil, 0)
+  check(fix.source == "nav" and fix.x == 10, "the navigation table is the source")
+  check(fix.usable == true, "a fresh nav fix is usable")
+  check(fix.fixAge == 0, "and is not aged")
+
+  -- GPS fills in only when the table is silent.
+  local gpsFix = instruments.fuse(blank, { heading = 90, alt = 70 },
+                                  { x = 1, y = 2, z = 3 }, 0)
+  check(gpsFix.source == "gps" and gpsFix.x == 1, "gps is the fallback")
+
+  -- Dead reckoning: flying east at 10 blocks/second on heading 270 (+X) for one
+  -- second should put the ship ten blocks further along +X.
+  local flying = instruments.fuse(blank,
+    { pos = { x = 0, y = 70, z = 0 }, heading = 270, alt = 70 }, nil, 0)
+  flying = instruments.fuse(flying,
+    { pos = { x = 10, y = 70, z = 0 }, heading = 270, alt = 70 }, nil, 1)
+
+  local reckoned = instruments.fuse(flying, { heading = 270, alt = 70 }, nil, 2)
+  check(reckoned.source == "reckon", "no position means reckoning")
+  check(reckoned.x > flying.x, "and the ship keeps moving the way it was going",
+        reckoned.x)
+  check(reckoned.fixAge >= 1, "the reckoned fix knows how old it is", reckoned.fixAge)
+  check(reckoned.usable == true, "a fresh reckon is still usable")
+
+  -- ...until it is not. This is the guard the whole module exists for.
+  local stale = reckoned
+  for t = 3, 3 + config.reckonLimit + 2 do
+    stale = instruments.fuse(stale, { heading = 270, alt = 70 }, nil, t)
+  end
+  check(stale.fixAge > config.reckonLimit, "reckoning ages out", stale.fixAge)
+  check(stale.usable == false,
+        "and an aged-out fix is not navigable -- the point of the whole file")
+
+  -- Vertical speed is differentiated because nothing reports it. It is smoothed,
+  -- so the assertion is on the sign and the approach, not on the exact number.
+  local rising = instruments.fuse(blank,
+    { pos = { x = 0, y = 64, z = 0 }, heading = 0, alt = 64 }, nil, 0)
+  for i = 1, 20 do
+    rising = instruments.fuse(rising,
+      { pos = { x = 0, y = 64 + i, z = 0 }, heading = 0, alt = 64 + i }, nil, i)
+  end
+  check(rising.vs > 0.8 and rising.vs < 1.2,
+        "a ship climbing a block a second reads about one", rising.vs)
+
+  -- Ground speed comes from the components, not from the velocity sensor: the
+  -- sensor's scalar includes the vertical, so a ship going straight up would
+  -- read as travelling.
+  check(near(rising.speed, 0, 0.05),
+        "climbing straight up is not ground speed", rising.speed)
+
+  -- A clearance of nil is "nothing answered" and must never become zero.
+  check(instruments.clearance({ alt = 80 }, nil) == nil,
+        "no sensor and no ground level is no clearance, not zero clearance")
+  check(instruments.clearance({ alt = 80 }, 64) == 16, "clearance from a known ground")
+  check(instruments.clearance({ alt = 80, clearance = 3 }, 64) == 3,
+        "the sensor wins over the arithmetic")
+
+  -- A hull with no navigation table still has an altimeter, and must still be
+  -- able to hold height while it waits.
+  local hovering = instruments.fuse(blank, { alt = 100 }, nil, 0)
+  check(hovering.usable == false, "no heading means not navigable")
+  check(hovering.levelled == true, "but it can still hold altitude")
+end
+
+--------------------------------------------------------------------------------
+section("autopilot")
+--------------------------------------------------------------------------------
+
+do
+  local autopilot = require("lib.autopilot")
+
+  local g = autopilot.gains({ hover = 0.7 })
+  check(g.hover == 0.7, "craft gains override the defaults")
+  check(g.vsP == autopilot.defaults.vsP, "and leave the rest alone")
+
+  local st = autopilot.new()
+
+  -- Idle is an explicit early return rather than "every target is nil". They
+  -- produce the same numbers for completely different reasons and only one of
+  -- them means the ship has been told to stop.
+  local _, demands = autopilot.step(st, { alt = 64, vs = 0 }, { idle = true }, 0)
+  check(demands.lift == 0 and demands.forward == 0, "idle asks for nothing")
+
+  -- Below target, the ship should be told to climb; above it, to sink.
+  autopilot.reset(st)
+  local _, up = autopilot.step(st, { alt = 60, vs = 0, heading = 0 },
+                               { alt = 100, limits = { climb = 4 } }, 0)
+  check(up.lift > st.gains.hover, "forty blocks low means more than hover", up.lift)
+  check(up.wantVs == 4, "and the climb is clamped to the hull's limit", up.wantVs)
+
+  autopilot.reset(st)
+  local _, down = autopilot.step(st, { alt = 140, vs = 0, heading = 0 },
+                                 { alt = 100, limits = { descend = 3 } }, 0)
+  check(down.lift < st.gains.hover, "forty blocks high means less", down.lift)
+  check(down.wantVs == -3, "and the descent is clamped too", down.wantVs)
+
+  -- The integral clamp. A ship left on the pad with a target far above it
+  -- accumulates error for as long as you leave it, and without the clamp the
+  -- moment it is freed it leaves like a rocket.
+  autopilot.reset(st)
+  local t = 0
+  for _ = 1, 2000 do
+    autopilot.step(st, { alt = 60, vs = 0, heading = 0 },
+                   { alt = 200, limits = { climb = 4 } }, t)
+    t = t + 0.2
+  end
+  check(st.loops.vs.i <= st.gains.vsIMax + 0.0001,
+        "the vertical integral is clamped", st.loops.vs.i)
+  local _, afterHours = autopilot.step(st, { alt = 60, vs = 0, heading = 0 },
+                                       { alt = 200, limits = { climb = 4 } }, t)
+  check(afterHours.lift <= 1.0, "and the demand it produces is still a throttle",
+        afterHours.lift)
+
+  -- reset() is what stops a climb integral being carried into a descent.
+  autopilot.reset(st)
+  check(st.loops.vs == nil, "reset forgets the integral")
+
+  -- Heading: the error is a signed turn, so the demand across the wrap is small
+  -- and in the right direction.
+  autopilot.reset(st)
+  local _, turnRight = autopilot.step(st, { alt = 64, vs = 0, heading = 350 },
+                                      { heading = 10, alt = 64 }, 0)
+  check(turnRight.yaw > 0, "350 to 10 turns right", turnRight.yaw)
+  check(turnRight.headingError == 20, "by twenty degrees", turnRight.headingError)
+
+  autopilot.reset(st)
+  local _, turnLeft = autopilot.step(st, { alt = 64, vs = 0, heading = 10 },
+                                     { heading = 350, alt = 64 }, 0)
+  check(turnLeft.yaw < 0, "10 to 350 turns left", turnLeft.yaw)
+
+  -- A ship pointing the wrong way should slow down rather than sprint off.
+  autopilot.reset(st)
+  local _, wrongWay = autopilot.step(st,
+    { alt = 64, vs = 0, heading = 0, speed = 0 },
+    { heading = 170, speed = 12, alt = 64 }, 0)
+  autopilot.reset(st)
+  local _, rightWay = autopilot.step(st,
+    { alt = 64, vs = 0, heading = 0, speed = 0 },
+    { heading = 0, speed = 12, alt = 64 }, 0)
+  check(wrongWay.forward < rightWay.forward,
+        "pointing away means less power, not more",
+        wrongWay.forward .. " vs " .. rightWay.forward)
+
+  -- A loop with no target does not run, and a demand that does not run is zero
+  -- rather than whatever it was last time.
+  autopilot.reset(st)
+  autopilot.step(st, { alt = 64, vs = 0, heading = 0, speed = 10 },
+                 { speed = 12, alt = 64 }, 0)
+  local _, noSpeed = autopilot.step(st, { alt = 64, vs = 0, heading = 0, speed = 10 },
+                                    { alt = 64 }, 0.2)
+  check(noSpeed.forward == 0,
+        "a ship told to stop navigating stops pushing", noSpeed.forward)
+
+  -- A long gap is a chunk that unloaded. Integrating across it would add
+  -- several seconds of error in one step.
+  autopilot.reset(st)
+  autopilot.step(st, { alt = 60, vs = 0 }, { alt = 100, limits = {} }, 0)
+  local before = st.loops.vs.i
+  autopilot.step(st, { alt = 60, vs = 0 }, { alt = 100, limits = {} }, 60)
+  check(st.loops.vs == nil or st.loops.vs.i == 0 or st.loops.vs.i == before,
+        "a minute-long gap does not get integrated")
+
+  -- The mix.
+  local mix = {
+    { demand = "lift",    control = "lift", as = "throttle" },
+    { demand = "forward", control = "main", as = "throttle" },
+    { demand = "yaw",     control = "main", as = "pivot", scale = 30 },
+  }
+  local outs = autopilot.apply(mix, { lift = 0.5, forward = 0.3, yaw = -1 })
+  check(near(outs.lift.throttle, 0.5), "lift goes to the lift bearing")
+  check(near(outs.main.throttle, 0.3), "forward goes to the main bearing")
+  check(near(outs.main.pivot, -30), "and yaw is scaled into degrees of pivot",
+        outs.main.pivot)
+
+  -- Terms accumulate, which is how two bearings share the lift.
+  local shared = autopilot.apply({
+    { demand = "lift", control = "a", as = "throttle", scale = 0.5 },
+    { demand = "lift", control = "a", as = "throttle", scale = 0.5 },
+  }, { lift = 0.8 })
+  check(near(shared.a.throttle, 0.8), "mix terms add", shared.a.throttle)
+
+  check(autopilot.settled({ alt = 100, heading = 90 }, { alt = 100, heading = 90 }),
+        "settled when it is where it was asked to be")
+  check(not autopilot.settled({ alt = 60, heading = 90 }, { alt = 100 }),
+        "not settled forty blocks low")
+end
+
+--------------------------------------------------------------------------------
+section("flight: states")
+--------------------------------------------------------------------------------
+
+do
+  local nav    = require("lib.nav")
+  local flight = require("lib.flight")
+
+  local waypoints = {}
+  nav.put(waypoints, { name = "base",  x = 0,   y = 64, z = 0,   kind = "pad" })
+  nav.put(waypoints, { name = "ridge", x = 0,   y = 64, z = 200 })
+  nav.put(waypoints, { name = "pad2",  x = 100, y = 70, z = 100, kind = "pad" })
+
+  local limits = { cruise = 12, climb = 4, descend = 3, clearance = 6 }
+  local ctx = { waypoints = waypoints, limits = limits, home = "base",
+                cruiseAlt = 100 }
+
+  local function fix(t)
+    local f = { x = 0, y = 64, z = 0, alt = 64, heading = 0, speed = 0, vs = 0,
+                usable = true, levelled = true, clearance = 0, burn = 9999 }
+    for k, v in pairs(t or {}) do f[k] = v end
+    return f
+  end
+
+  local st = flight.new()
+  check(st.state == "idle", "a new ship is parked")
+
+  local _, goal = flight.step(st, fix(), ctx, 0)
+  check(goal.release == true,
+        "and a parked ship hands the hull back rather than holding zeros")
+
+  -- Orders are refused rather than queued.
+  local no, noWhy = flight.command(st, { type = "hold" }, ctx, 0)
+  check(refused(no, noWhy, "not flying"), "cannot hold what is not flying", noWhy)
+  check(refused(flight.command(st, { type = "fly", names = { "atlantis" } }, ctx, 0)),
+        "cannot fly to a waypoint that does not exist")
+  check(refused(flight.command(st, { type = "dock", pad = "nope" }, ctx, 0)),
+        "cannot dock at a pad that does not exist")
+
+  local ok = flight.command(st, { type = "fly", names = { "ridge" }, alt = 100 }, ctx, 0)
+  check(ok and st.state == "preflight", "a flight starts with the checks", st.state)
+
+  -- Preflight, then straight up with no steering.
+  local _, g2 = flight.step(st, fix(), ctx, 1)
+  check(st.state == "takeoff", "cleared for takeoff", st.state)
+  check(g2.vs == 4 and g2.speed == 0,
+        "takeoff climbs and does not steer -- the scaffolding is still there")
+
+  -- Off the ground and it starts pointing at the first leg.
+  flight.step(st, fix({ alt = 80, clearance = 16 }), ctx, 2)
+  check(st.state == "climb", "then climbs on course", st.state)
+
+  local _, g3 = flight.step(st, fix({ alt = 80, clearance = 16 }), ctx, 3)
+  check(near(g3.heading or -1, 0), "pointing at the ridge, which is due +Z", g3.heading)
+  check(g3.alt == 100, "and climbing to the plan's altitude")
+
+  -- At altitude, it cruises.
+  flight.step(st, fix({ alt = 100, clearance = 36, z = 10 }), ctx, 4)
+  check(st.state == "cruise", "at altitude it cruises", st.state)
+
+  local _, g4 = flight.step(st, fix({ alt = 100, clearance = 36, z = 10 }), ctx, 5)
+  check(g4.speed == 12, "at the hull's cruise speed", g4.speed)
+
+  -- Arriving at the last leg of a plan whose end is a point, not a pad.
+  flight.step(st, fix({ alt = 100, clearance = 36, z = 199 }), ctx, 6)
+  check(st.state == "loiter",
+        "the end of a plan is a place to be, not a place to land", st.state)
+
+  -- A plan ending on a pad descends instead.
+  local st2 = flight.new()
+  flight.command(st2, { type = "fly", names = { "pad2" }, alt = 100 }, ctx, 0)
+  st2.state = "cruise"
+  flight.step(st2, fix({ x = 100, z = 100, alt = 100, clearance = 30 }), ctx, 1)
+  check(st2.state == "descend", "a plan ending on a pad comes down", st2.state)
+
+  -- ...through approach and land, and ends parked with the hull handed back.
+  -- `descend` commands an altitude rather than a rate: it is a long way down and
+  -- the outer loop's job is to arrive at approach height, not to hold a rate.
+  local _, gd = flight.step(st2, fix({ x = 100, z = 100, alt = 82, clearance = 12 }), ctx, 2)
+  check(st2.state == "approach", "down to approach height first", st2.state)
+  check(gd.alt and gd.alt < 100, "having descended towards the pad", gd.alt)
+
+  flight.step(st2, fix({ x = 100, z = 100, alt = 74, clearance = 4 }), ctx, 3)
+  check(st2.state == "land", "then the last few blocks", st2.state)
+
+  local _, gl = flight.step(st2, fix({ x = 100, z = 100, alt = 70, clearance = 0.5,
+                                       vs = 0 }), ctx, 4)
+  check(st2.state == "idle", "and down", st2.state)
+  check(gl.release == true, "handing the hull back on arrival")
+
+  -- `stop` is a controlled descent, never a thrust cut.
+  local st3 = flight.new()
+  st3.state = "cruise"
+  flight.command(st3, { type = "stop" }, ctx, 0)
+  check(st3.state == "emergency", "stop means emergency")
+  local _, ge = flight.step(st3, fix({ alt = 120, clearance = 56 }), ctx, 1)
+  check(ge.vs == -3, "which is a descent at the hull's rate, not engines off", ge.vs)
+end
+
+--------------------------------------------------------------------------------
+section("flight: guards")
+--------------------------------------------------------------------------------
+
+do
+  local nav    = require("lib.nav")
+  local flight = require("lib.flight")
+  local config = require("lib.config")
+
+  local waypoints = {}
+  nav.put(waypoints, { name = "base", x = 0, y = 64, z = 0, kind = "pad" })
+  nav.put(waypoints, { name = "far",  x = 0, y = 64, z = 3000 })
+
+  local limits = { cruise = 12, climb = 4, descend = 3, clearance = 6 }
+  local ctx = { waypoints = waypoints, limits = limits, home = "base",
+                cruiseAlt = 100 }
+
+  local function fix(t)
+    local f = { x = 0, y = 100, z = 100, alt = 100, heading = 0, speed = 12,
+                vs = 0, usable = true, levelled = true, clearance = 40,
+                burn = 99999 }
+    for k, v in pairs(t or {}) do f[k] = v end
+    return f
+  end
+
+  -- 1. No vertical reference. Without an altitude there is no rate of climb, so
+  -- the lift demand would sit at zero and the ship would fall under program
+  -- control. Handing it back is worse than flying and much better than that.
+  local st = flight.new()
+  st.state = "cruise"
+  local _, g, events = flight.step(st, fix({ levelled = false, alt = nil }), ctx, 1)
+  check(g.release == true, "no altimeter hands the hull back")
+  check(st.state == "idle", "and stops pretending to fly", st.state)
+  check(#events > 0 and events[1].why == "noalt", "saying why")
+
+  -- 2. Ground clearance outranks the flight plan.
+  st = flight.new()
+  st.state = "cruise"
+  st.plan = nav.plan(waypoints, { "far" }, 100)
+  st.alt = 100
+  local _, g2 = flight.step(st, fix({ clearance = 2 }), ctx, 1)
+  check(g2.vs == 4, "too close to the ground means climb, at the hull's rate", g2.vs)
+  check(g2.speed == 0, "and stop going forward while you do it")
+  check(st.guard == "clearance", "the guard says so")
+  check(st.state == "cruise", "but the mission is not abandoned -- it is overridden")
+  check(st.plan ~= nil, "and the plan survives it")
+
+  -- ...and stands down when the ground does.
+  flight.step(st, fix({ clearance = 40 }), ctx, 2)
+  check(st.guard == nil, "the guard releases when the hill is passed")
+
+  -- The exemption: getting close to the ground is the point of landing.
+  st = flight.new()
+  st.state = "land"
+  local _, g3 = flight.step(st, fix({ clearance = 0.4, vs = -0.2, alt = 64 }), ctx, 1)
+  check(st.state == "idle", "the clearance guard does not fight a landing", st.state)
+
+  -- 3. No usable fix: stop navigating.
+  st = flight.new()
+  st.state = "cruise"
+  st.alt = 100
+  st.plan = nav.plan(waypoints, { "far" }, 100)
+  local _, g4 = flight.step(st, fix({ usable = false }), ctx, 1)
+  check(st.state == "loiter", "an unusable fix stops navigation", st.state)
+  check(g4.speed == 0, "and stops the ship")
+  check(g4.alt ~= nil, "while still holding altitude -- it is waiting, not falling")
+
+  -- ...and picks the plan back up when the fix returns, because a navigation
+  -- table going quiet for four seconds is normal rather than fatal.
+  flight.step(st, fix(), ctx, 2)
+  check(st.state == "cruise", "and resumes when it comes back", st.state)
+
+  -- 4. Bingo fuel: turn for home while there is still enough to get there.
+  st = flight.new()
+  st.state = "cruise"
+  st.alt = 100
+  st.plan = nav.plan(waypoints, { "far" }, 100)
+
+  -- Home is 100 blocks away at 12 blocks/second: about 8 seconds, so with the
+  -- reserve anything under ~12 seconds of burn should divert.
+  local _, _, ev = flight.step(st, fix({ burn = 10 }), ctx, 1)
+  check(st.bingo == true, "low fuel diverts")
+  check(st.plan and nav.current(st.plan).name == "base",
+        "to home", st.plan and nav.current(st.plan).name)
+  check(#ev > 0 and ev[#ev].why == "bingo", "saying why")
+
+  -- Latched. Fuel that recovers does not un-divert: the diversion is now the
+  -- plan, and changing your mind twice is how ships end up in the sea.
+  local planBefore = nav.current(st.plan).name
+  flight.step(st, fix({ burn = 99999 }), ctx, 2)
+  check(st.bingo == true and nav.current(st.plan).name == planBefore,
+        "and does not un-divert when a tank is topped up")
+
+  -- Preflight refuses a plan there is not fuel for, which is the only place a
+  -- flight is refused at all.
+  st = flight.new()
+  flight.command(st, { type = "fly", names = { "far" }, alt = 100 }, ctx, 0)
+  check(st.state == "preflight", "a long flight is planned")
+  flight.step(st, fix({ burn = 5, x = 0, z = 0, alt = 64, clearance = 0 }), ctx, 1)
+  check(st.state == "idle", "and refused on the ground rather than in the air",
+        st.state)
+  check(st.plan == nil, "the plan is dropped with it")
+
+  -- An update must never run while the ship is flying.
+  st = flight.new()
+  check(flight.busy(st) == false, "a parked ship may be updated")
+  st.state = "cruise"
+  check(flight.busy(st) == true, "a flying one may not")
+  st.state = "loiter"
+  check(flight.busy(st) == true, "nor one merely hovering")
+end
+
+--------------------------------------------------------------------------------
+section("hull")
+--------------------------------------------------------------------------------
+
+do
+  local mock = require("test.mockperipheral")
+  local config = require("lib.config")
+
+  local function world()
+    local w = mock.new{ lift = "lift0", main = "main0" }
+    w.bearing("lift0", { count = 4 })
+    w.bearing("main0", { count = 2 })
+    w.navTable("nav0")
+    w.altimeter("alt0")
+    w.velocimeter("vel0")
+    w.gimbal("gim0")
+    w.optical("opt0")
+    w.dockPort("dock0")
+    w.orientation("trim0")
+    _G.peripheral = w.api
+    return w
+  end
+
+  local craft = {
+    name = "Kestrel",
+    controls = {
+      lift = { kind = "bearing", peripheral = "lift0", group = "all" },
+      main = { kind = "bearing", peripheral = "main0", group = "all",
+               pivot = { min = -30, max = 30 } },
+      trim = { kind = "orientation", peripheral = "trim0" },
+    },
+    instruments = { nav = "nav0", alt = "alt0", vel = "vel0", gimbal = "gim0",
+                    ground = "opt0", dock = "dock0", stick = false, link = false },
+    limits = { cruise = 12, climb = 4, descend = 3, clearance = 6 },
+    mix = {
+      { demand = "lift",    control = "lift", as = "throttle" },
+      { demand = "forward", control = "main", as = "throttle" },
+      { demand = "yaw",     control = "main", as = "pivot", scale = 30 },
+    },
+  }
+
+  local w = world()
+  local hull = require("lib.hull")
+
+  local ok, problems = hull.define(craft)
+  check(ok, "a good craft file loads clean",
+        problems and problems[1])
+  check(hull.name == "Kestrel", "and the ship knows its name")
+  check(hull.count() == 3, "with three controls", hull.count())
+  check(#hull.mix == 3, "and three mix terms")
+
+  -- A mix naming a field the control cannot do is caught at load, not
+  -- discovered at four hundred blocks.
+  local bad = {}
+  for k, v in pairs(craft) do bad[k] = v end
+  bad.mix = { { demand = "lift", control = "trim", as = "throttle" } }
+  local ok2, problems2 = hull.define(bad)
+  check(not ok2 and tostring(problems2[1]):find("throttle", 1, true),
+        "a mix term a control cannot do is refused", problems2 and problems2[1])
+
+  bad.mix = { { demand = "lift", control = "nonesuch", as = "throttle" } }
+  local _, problems3 = hull.define(bad)
+  check(tostring(problems3[1]):find("nonesuch", 1, true),
+        "and so is one naming a control that is not there")
+
+  -- A bad file is a warning and a missing control, never a computer that will
+  -- not boot far enough to be fixed.
+  local ok4, problems4 = hull.define("not a table")
+  check(not ok4 and problems4[1], "a craft file that is not a table is survivable")
+  check(hull.define(nil) == false, "and so is no craft file at all")
+
+  -- Reading -------------------------------------------------------------------
+
+  w = world()
+  hull.define(craft)
+  -- Ten blocks up over ground at 64. Deliberately inside the optical sensor's
+  -- default range: further up and the honest answer is no reading at all, which
+  -- is the case just below.
+  w.ship.x, w.ship.y, w.ship.z, w.ship.heading = 10, 74, 20, 45
+
+  local raw = hull.read(1)
+  check(raw.pos and raw.pos.x == 10 and raw.pos.z == 20, "position comes back")
+  check(raw.heading == 45, "and heading")
+  check(raw.alt == 74, "and altitude")
+  check(near(raw.clearance, 10), "and clearance above the terrain", raw.clearance)
+  check(raw.docked == nil, "an empty docking name is nil, not an empty string")
+
+  -- The base mod calls it getHeight and the compatibility layer calls it
+  -- getWorldHeight. Asked rather than tried, so a hull with the older block does
+  -- not record a fault on every single sweep.
+  local w2 = mock.new{ lift = "lift0" }
+  w2.bearing("lift0")
+  w2.navTable("nav0")
+  w2.altimeterLegacy("alt0")
+  _G.peripheral = w2.api
+  hull.define({ controls = { lift = { kind = "bearing", peripheral = "lift0" } },
+                instruments = { nav = "nav0", alt = "alt0" }, mix = {} })
+  w2.ship.y = 123
+  local rawLegacy = hull.read(1)
+  check(rawLegacy.alt == 123, "the base mod's getHeight is read too", rawLegacy.alt)
+  check(next(hull.faults) == nil, "without leaving a fault behind", next(hull.faults))
+
+  -- A position the mod refuses to project is no position, not a position of
+  -- zero -- which is the difference between loitering and flying to the origin.
+  w = world()
+  hull.define(craft)
+  w.device("nav0").available = false
+  local dark = hull.read(1)
+  check(dark.pos == nil, "an unprojectable position is nil")
+
+  -- An optical sensor that hit nothing has no clearance. Zero here would have
+  -- the terrain guard climbing away from a canyon at full power.
+  w = world()
+  hull.define(craft)
+  w.ship.y = 500
+  local high = hull.read(1)
+  check(high.clearance == nil, "out of range is no reading, not zero clearance")
+
+  -- Writing -------------------------------------------------------------------
+
+  w = world()
+  hull.define(craft)
+  hull.claim()
+  check(w.device("lift0").last.setBearingControlMode[1] == "computer",
+        "claim takes the bearings")
+  check(w.device("opt0").last.setRange ~= nil,
+        "and asks the optical sensor to see further than the clearance limit")
+
+  -- Slew limiting: a step from nothing to everything is a ship launched rather
+  -- than a ship raised.
+  local applied = hull.apply({ lift = { throttle = 1 } }, 0.2)
+  check(#applied == 1, "one write", #applied)
+  check(applied[1].to <= config.slew * 0.2 + 0.0001,
+        "a full-throttle demand is rate limited", applied[1].to)
+
+  local total = applied[1].to
+  for _ = 1, 40 do
+    local a = hull.apply({ lift = { throttle = 1 } }, 0.2)
+    if a[1] then total = a[1].to end
+  end
+  check(near(total, 1), "and gets there eventually", total)
+
+  -- A demand that changes nothing is not written. A ship holding cruise asks
+  -- for the same throttle five times a second.
+  local repeated = hull.apply({ lift = { throttle = 1 } }, 0.2)
+  check(#repeated == 0, "an unchanged demand is not written", #repeated)
+
+  -- Pivot is clamped to what the hull said its bearing can do.
+  local pivoted = hull.apply({ main = { pivot = 90 } }, 0.2)
+  check(pivoted[1] and pivoted[1].to == 30, "pivot is clamped to the craft's limit",
+        pivoted[1] and pivoted[1].to)
+
+  -- Angles are not slewed: a bearing rate-limits itself in the world, and a
+  -- second limit here would only fight the first.
+  --
+  -- Also the order. Writes come back in the kind's declared field order, not in
+  -- pairs() order, so the log and the telemetry frame list the same sweep's
+  -- changes the same way on every computer that reads this hull.
+  local trimmed = hull.apply({ trim = { angleX = 15, angleZ = 0 } }, 0.2)
+  check(trimmed[1] and trimmed[1].field == "angleX" and trimmed[1].to == 15,
+        "an angle goes straight through, and in a stable order",
+        trimmed[1] and (trimmed[1].field .. "=" .. tostring(trimmed[1].to)))
+
+  -- Release -------------------------------------------------------------------
+
+  hull.release()
+  check(w.device("lift0").writes.clearThrottleOverride == 1,
+        "release hands the throttle back to redstone")
+  check(w.device("lift0").last.setBearingControlMode[1] == "redstone",
+        "and the bearing with it")
+  check(w.device("trim0").writes.clear == 1, "the orientation source is cleared")
+  check(next(hull.current) == nil, "and nothing is remembered as still driven")
+
+  -- The whole point: after release, a ship behaves as though no computer were
+  -- ever on it.
+  check(w.device("lift0").override == false, "no override is left holding anything")
+
+  -- Faults --------------------------------------------------------------------
+
+  -- A bearing broken off the hull mid-flight must be a fault, not a crash.
+  w = world()
+  hull.define(craft)
+  w.remove("lift0")
+  local okApply = pcall(hull.apply, { lift = { throttle = 0.5 } }, 0.2)
+  check(okApply, "writing to a peripheral that has gone is survivable")
+  check(hull.faults.lift ~= nil, "and is recorded as a fault")
+
+  local described = hull.describe()
+  check(described.name == "Kestrel", "describe carries the name")
+  check(#described.controls == 3, "and every control")
+
+  _G.peripheral = realPeripheral
+end
+
+--------------------------------------------------------------------------------
+section("hull: redstone")
+--------------------------------------------------------------------------------
+
+-- A great deal of Create Aeronautics is driven by a signal rather than a method
+-- call -- burners, steam vents, throttle levers, gearshifts, and every thruster
+-- left in its default redstone control mode. The `wire` kind is how any of that
+-- gets said at all.
+do
+  local mock = require("test.mockperipheral")
+  local hull = require("lib.hull")
+  local config = require("lib.config")
+
+  local function rig(craft)
+    local w = mock.new{}
+    w.bearing("lift0", { count = 4 })
+    w.navTable("nav0")
+    w.altimeter("alt0")
+    w.relay("redstone_relay_0")
+    _G.peripheral = w.api
+    _G.redstone = w.redstone.api
+    local ok, problems = hull.define(craft)
+    return w, ok, problems
+  end
+
+  local BASE = {
+    controls = { lift = { kind = "bearing", peripheral = "lift0" } },
+    instruments = { nav = "nav0", alt = "alt0", vel = false, gimbal = false,
+                    ground = false, dock = false, stick = false, link = false },
+    mix = {},
+  }
+
+  local function craft(extra)
+    local c = { controls = {}, instruments = BASE.instruments, mix = {}, signals = {} }
+    for k, v in pairs(BASE.controls) do c.controls[k] = v end
+    for k, v in pairs(extra.controls or {}) do c.controls[k] = v end
+    c.mix = extra.mix or {}
+    c.signals = extra.signals or {}
+    return c
+  end
+
+  -- Digital, on the flight computer's own bus. No peripheral named at all, which
+  -- is the common case and must not be read as "could not find one".
+  local w, ok, problems = rig(craft{
+    controls = { burner = { kind = "wire", side = "top" } },
+    mix = { { demand = "lift", control = "burner", as = "signal" } },
+  })
+  check(ok, "a wire on the computer's own sides loads clean", problems and problems[1])
+  check(hull.get("burner").side == nil, "with no peripheral, which is not a fault")
+
+  hull.apply({ burner = { signal = 1 } }, 0.2)
+  check(w.redstone.output.top == true, "and a full signal turns the side on",
+        tostring(w.redstone.output.top))
+
+  hull.apply({ burner = { signal = 0 } }, 0.2)
+  check(w.redstone.output.top == false, "and zero turns it off")
+
+  -- Analog: 0..1 becomes 0..15, which is what a Create throttle lever reads.
+  w = rig(craft{
+    controls = { lever = { kind = "wire", side = "back", mode = "analog" } },
+    mix = { { demand = "forward", control = "lever", as = "signal" } },
+  })
+  hull.apply({ lever = { signal = 1 } }, 10)     -- a long dt, past the slew limit
+  check(w.redstone.output.back == 15, "an analogue wire scales to 0-15",
+        w.redstone.output.back)
+
+  hull.apply({ lever = { signal = 0.5 } }, 10)
+  check(w.redstone.output.back == 8, "proportionally", w.redstone.output.back)
+
+  -- An analogue signal is proportional, so it is rate limited like a throttle:
+  -- it is probably driving something the ship's motion depends on.
+  w = rig(craft{
+    controls = { lever = { kind = "wire", side = "back", mode = "analog" } },
+    mix = {},
+  })
+  hull.apply({ lever = { signal = 1 } }, 0.2)
+  check(w.redstone.output.back < 15,
+        "and rate limited on the way up", w.redstone.output.back)
+
+  -- A digital wire is a switch. Rate limiting a switch only makes it late.
+  w = rig(craft{
+    controls = { burner = { kind = "wire", side = "top" } },
+    mix = {},
+  })
+  hull.apply({ burner = { signal = 1 } }, 0.2)
+  check(w.redstone.output.top == true, "a digital wire is not rate limited")
+
+  -- invert lives on the control, not in every mix term that touches it.
+  w = rig(craft{
+    controls = { valve = { kind = "wire", side = "left", invert = true } },
+    mix = {},
+  })
+  hull.apply({ valve = { signal = 0 } }, 0.2)
+  check(w.redstone.output.left == true, "an inverted wire is on when asked for off")
+
+  -- Bundled: one side shared by up to sixteen controls, so the whole face is
+  -- recomputed on every write. Setting one colour without knowing the other
+  -- fifteen turns them all off.
+  w = rig(craft{
+    controls = {
+      lamp  = { kind = "wire", side = "back", mode = "bundled", colour = colours.lime },
+      pump  = { kind = "wire", side = "back", mode = "bundled", colour = colours.red },
+    },
+    mix = {},
+  })
+  hull.apply({ lamp = { signal = 1 } }, 0.2)
+  hull.apply({ pump = { signal = 1 } }, 0.2)
+  check(w.redstone.output.back == colours.lime + colours.red,
+        "two bundled colours on one cable both stay on",
+        w.redstone.output.back)
+
+  hull.apply({ lamp = { signal = 0 } }, 0.2)
+  check(w.redstone.output.back == colours.red,
+        "and turning one off leaves the other alone", w.redstone.output.back)
+
+  -- A side carries one signal, so everything on it has to agree about what that
+  -- signal is.
+  local _, badOk, badWhy = rig(craft{
+    controls = {
+      a = { kind = "wire", side = "top" },
+      b = { kind = "wire", side = "top", mode = "analog" },
+    },
+    mix = {},
+  })
+  check(not badOk, "two wires disagreeing about a side is refused", badWhy and badWhy[1])
+
+  local _, dupOk, dupWhy = rig(craft{
+    controls = {
+      a = { kind = "wire", side = "top", mode = "bundled", colour = colours.lime },
+      b = { kind = "wire", side = "top", mode = "bundled", colour = colours.lime },
+    },
+    mix = {},
+  })
+  check(not dupOk, "and so is the same colour twice", dupWhy and dupWhy[1])
+
+  local _, sideOk, sideWhy = rig(craft{
+    controls = { a = { kind = "wire", side = "sideways" } },
+    mix = {},
+  })
+  check(not sideOk and tostring(sideWhy[1]):find("side", 1, true),
+        "a side that does not exist is caught at load, not silently ignored",
+        sideWhy and sideWhy[1])
+  -- Silently ignored is the failure that matters here: a signal sent to a side
+  -- that is not there is simply nothing, so the burner never lights and there is
+  -- no error anywhere to explain it.
+
+  local _, colourOk = rig(craft{
+    controls = { a = { kind = "wire", side = "top", mode = "bundled" } },
+    mix = {},
+  })
+  check(not colourOk, "a bundled wire with no colour is refused")
+
+  -- A relay: the identical API on the end of a wired modem, which on an
+  -- assembled contraption is how the burner gets to be somewhere sensible.
+  w = rig(craft{
+    controls = { burner = { kind = "wire", peripheral = "redstone_relay_0",
+                            side = "front" } },
+    mix = {},
+  })
+  hull.apply({ burner = { signal = 1 } }, 0.2)
+  check(w.device("redstone_relay_0").output.front == true,
+        "a wire on a relay drives the relay")
+  check(w.redstone.output.front == nil,
+        "and not the computer's own side of the same name")
+
+  -- The mix drives it, which is the entire point: "burn when we want to climb".
+  local autopilot = require("lib.autopilot")
+  w = rig(craft{
+    controls = { burner = { kind = "wire", side = "top" } },
+    mix = { { demand = "lift", control = "burner", as = "signal" } },
+  })
+  hull.apply(autopilot.apply(hull.mix, { lift = 1 }), 0.2)
+  check(w.redstone.output.top == true, "the mix can drive a wire from a demand")
+
+  -- Release zeroes a wire rather than handing it back. It is the one kind with
+  -- no owner underneath us: the computer *is* what holds the signal, so there is
+  -- nothing to hand it to and off is the only safe value.
+  hull.release()
+  check(w.redstone.output.top == false, "release turns every wire off")
+
+  -- Named inputs: a launch button, a lever, a comparator on the hold.
+  w = rig(craft{
+    controls = {},
+    signals = {
+      launch = { side = "front" },
+      cargo  = { side = "right", mode = "analog" },
+      relayed = { side = "back", peripheral = "redstone_relay_0" },
+    },
+  })
+  w.redstone.input.front = true
+  w.redstone.input.right = 9
+  w.device("redstone_relay_0").input.back = true
+
+  local raw = hull.read(1)
+  check(raw.signals and raw.signals.launch == true, "a digital input is read")
+  check(raw.signals and raw.signals.cargo == 9, "an analogue one keeps its level",
+        raw.signals and raw.signals.cargo)
+  check(raw.signals and raw.signals.relayed == true, "and a relay's input too")
+
+  local described = hull.describe()
+  check(#described.signals == 3, "and they ride in the hull description",
+        #described.signals)
+
+  _G.redstone = nil
+  _G.peripheral = realPeripheral
+end
+
+--------------------------------------------------------------------------------
+section("probe")
+--------------------------------------------------------------------------------
+
+-- probe.lua writes the file every ship depends on, and it is the first thing
+-- anyone runs. The check that matters is the round trip: whatever it generates
+-- has to be a file lib/hull can actually load, because the alternative is a
+-- syntax error discovered on an assembled contraption with no working copy of
+-- anything to fall back on.
+do
+  local mock = require("test.mockperipheral")
+  local hull = require("lib.hull")
+  local config = require("lib.config")
+
+  local w = mock.new{}
+  w.bearing("thruster_bearing_0", { count = 2 })
+  w.bearing("thruster_bearing_1", { count = 4 })
+  w.navTable("navigation_table_0")
+  w.altimeter("altitude_sensor_0")
+  w.optical("optical_sensor_0")
+  w.orientation("virtual_orientation_source_0")
+  _G.peripheral = w.api
+
+  fs.delete(config.craftFile)
+  fs.delete(config.craftFile .. ".new")
+  fs.delete(config.surveyFile)
+
+  local ok = pcall(dofile, "/probe.lua")
+  check(ok, "probe runs")
+  check(fs.exists(config.surveyFile), "and writes a survey")
+  check(fs.exists(config.craftFile), "and a craft file")
+
+  local body = (function()
+    local f = fs.open(config.surveyFile, "r") local b = f.readAll() f.close() return b
+  end)()
+  check(body:find("thruster_bearing", 1, true) ~= nil,
+        "naming what it found, for a human squinting at a hull that will not fly")
+
+  -- The round trip.
+  local loadedOk, problems = hull.load(config.craftFile)
+  check(loadedOk, "the generated craft file loads clean",
+        problems and problems[1])
+  check(hull.get("lift") ~= nil, "with a lift control")
+  check(hull.get("main") ~= nil, "and a main one, from the second bearing")
+  check(#hull.mix >= 3, "and a mix that drives them", #hull.mix)
+  check(hull.instruments.nav ~= nil, "with the navigation table found")
+
+  -- Never overwritten. A generated file replacing a hull somebody tuned over an
+  -- evening would be the most annoying thing this program could do.
+  local kept = "-- mine\nreturn { controls = {}, mix = {} }\n"
+  writeFile(config.craftFile, kept)
+  pcall(dofile, "/probe.lua")
+
+  local after = (function()
+    local f = fs.open(config.craftFile, "r") local b = f.readAll() f.close() return b
+  end)()
+  check(after == kept, "a second run does not overwrite an existing craft file")
+  check(fs.exists(config.craftFile .. ".new"),
+        "and leaves its suggestion beside it instead")
+
+  fs.delete(config.craftFile)
+  fs.delete(config.craftFile .. ".new")
+  fs.delete(config.surveyFile)
+  _G.peripheral = realPeripheral
+end
+
+--------------------------------------------------------------------------------
+section("state and log")
+--------------------------------------------------------------------------------
+
+do
+  local config = require("lib.config")
+  local state  = require("lib.state")
+  local log    = require("lib.log")
+
+  state.open("/test-aero.state", { plan = nil })
+  state.set("alt", 120)
+  check(state.get("alt") == 120, "state remembers")
+  check(state.dirty == true, "and knows it has something to write")
+
+  state.flush(0)
+  check(state.dirty == false, "flush writes")
+  check(fs.exists("/test-aero.state"), "and leaves a file")
+
+  -- The fix moves every sweep; a ship writing it five times a second would do
+  -- nothing else.
+  state.set("alt", 121)
+  check(state.tick(0.5) == false, "a write inside the debounce is skipped")
+  check(state.tick(config.stateWrite + 1) ~= false, "and taken after it")
+
+  local reopened = state.open("/test-aero.state")
+  check(reopened.alt == 121, "state survives a reload", reopened.alt)
+
+  -- A corrupt file is the same situation as no file, and throwing would leave a
+  -- ship that cannot boot far enough to be fixed.
+  writeFile("/test-aero.state", "this is not a table")
+  local recovered = state.open("/test-aero.state", { alt = 64 })
+  check(recovered.alt == 64, "a corrupt state file starts from the default")
+
+  state.clear()
+  check(not fs.exists("/test-aero.state"), "clear removes it")
+
+  -- The log.
+  log.clear()
+  for i = 1, config.logSize + 20 do
+    log.add({ at = { day = 1, clock = i }, ship = 1, what = "state",
+              from = "cruise", to = "loiter", why = "nofix" })
+  end
+  check(#log.entries == config.logSize, "the log is bounded", #log.entries)
+
+  local recent = log.recent(3)
+  check(#recent == 3 and recent[1].at.clock > recent[3].at.clock,
+        "recent comes back newest first")
+
+  log.clear()
+  log.add({ ship = 1, what = "state", from = "cruise", to = "rtb", why = "bingo" })
+  log.add({ ship = 2, what = "state", from = "idle", to = "takeoff", why = "fly" })
+  check(#log.forShip(1) == 1, "one ship's entries can be picked out of the fleet")
+
+  -- The cause is the point of the entry, so it is what survives the line being
+  -- cut to a pocket computer's width.
+  local line = log.line(log.entries[1])
+  check(line:find("bingo", 1, true) ~= nil, "the reason is on the line", line)
+
+  check(log.value(3.14159):len() <= 4, "numbers are rounded for a narrow column",
+        log.value(3.14159))
+  check(log.value(nil) == "-", "and nothing is a dash")
+end
+
+--------------------------------------------------------------------------------
+section("net")
+--------------------------------------------------------------------------------
+
+do
+  local mock   = require("test.mockperipheral")
+  local config = require("lib.config")
+  local net    = require("lib.net")
+
+  local w = mock.new{}
+  w.add("wired0", "modem", {}).methods = { isWireless = function() return false end }
+  local wireless = w.modem("top")
+  _G.peripheral = w.api
+
+  local side = net.open(config.channel)
+  check(side == "top", "net finds the wireless modem and skips the wired one", side)
+  check(wireless.open[config.channel] == true, "and opens the network's channel")
+
+  net.broadcast({ type = "tlm", alt = 100 })
+  local frame = wireless.sent[1] and wireless.sent[1].frame
+  check(frame and frame.aero == config.protocol, "frames carry the network name")
+  check(frame and frame.to == "*", "a broadcast is addressed to everyone")
+  check(frame and frame.body.type == "tlm", "and the body goes through intact")
+
+  -- decode is the load-bearing filter. Each of these is a message that must not
+  -- be delivered, and the last is the one rednet never had to deal with.
+  local ch = config.channel
+  check(net.decode("timer", 1) == nil, "not a modem message")
+  check(net.decode("modem_message", "top", ch + 1, ch, frame) == nil, "wrong channel")
+  check(net.decode("modem_message", "top", ch, ch, { aero = "other", body = {},
+        to = "*", from = 9 }) == nil, "wrong network on the right channel")
+  check(net.decode("modem_message", "top", ch, ch, { aero = config.protocol,
+        body = {}, to = 999, from = 9 }) == nil, "addressed to someone else")
+  check(net.decode("modem_message", "top", ch, ch, frame) == nil,
+        "our own broadcast coming back to us")
+
+  local from, body = net.decode("modem_message", "top", ch, ch,
+    { aero = config.protocol, from = 42, to = "*", body = { type = "net" } })
+  check(from == 42 and body.type == "net", "and a real one gets through")
+
+  net.close()
+  _G.peripheral = realPeripheral
+end
+
+--------------------------------------------------------------------------------
+
+print("")
+print(("%d passed, %d failed"):format(pass, fail))
+flush()
+
+_G.AERO_TOTALS = _G.AERO_TOTALS or {}
+_G.AERO_TOTALS.spec = { pass = pass, fail = fail }
