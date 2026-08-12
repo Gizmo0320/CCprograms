@@ -332,6 +332,38 @@ function mock.new(opts)
     return d
   end
 
+  --- An optical sensor pointing along the ship's nose.
+  --
+  -- A real raycast against the terrain function: it steps forward until the
+  -- ground is higher than the ship. That is what makes the obstacle guard
+  -- testable at all -- a cliff face is exactly the thing the downward sensor
+  -- cannot see, because the ground directly beneath the ship is fine right up
+  -- until it is not.
+  function world.forwardOptical(side, opts2)
+    opts2 = opts2 or {}
+    local d = world.add(side, "optical_sensor", { range = opts2.range or 64 })
+
+    local function cast()
+      local s = world.ship
+      local fx, fz = forward(s.heading)
+      local step = 1
+      for distance = step, d.range, step do
+        local x, z = s.x + fx * distance, s.z + fz * distance
+        if world.terrain(x, z) > s.y then return distance end
+      end
+      return nil
+    end
+
+    d.methods = {
+      setRange = function(n) record(d, "setRange", n); d.range = tonumber(n) or d.range end,
+      getRange = function() return d.range end,
+      hasHit = function() return cast() ~= nil end,
+      getDistance = function() return cast() or d.range end,
+      getBlock = function() return "minecraft:stone" end,
+    }
+    return d
+  end
+
   function world.dockPort(side)
     local d = world.add(side, "docking_connector", {})
     d.methods = {
@@ -533,6 +565,102 @@ function mock.new(opts)
     }
     world.balloons[#world.balloons + 1] = b
     return b
+  end
+
+  --------------------------------------------------------------------------------
+  -- CC: Sable
+  --------------------------------------------------------------------------------
+
+  -- `sublevel` and `aero` are globals rather than peripherals, so they are
+  -- installed separately from world.api. Everything is driven off world.ship, so
+  -- a test that tilts the ship tilts what the physics engine reports too.
+  --
+  --   world.sable{ assembled = true }
+  --   _G.sublevel, _G.aero = world.sublevel, world.aero
+  --
+  -- The orientation is built from the ship's pitch, roll and heading rather than
+  -- stored, which is the only way the quaternion the code reads and the angles
+  -- the test sets can be guaranteed to agree.
+  function world.sable(opts2)
+    opts2 = opts2 or {}
+    world.assembled = opts2.assembled ~= false
+    world.mass = opts2.mass or 12000
+    world.spin = opts2.spin or { x = 0, y = 0, z = 0 }
+
+    local function check()
+      if not world.assembled then
+        error("This computer is not on a Sub-Level!", 0)
+      end
+    end
+
+    --- Ship angles to a quaternion, the way the physics engine would hold them.
+    --
+    -- Yaw about Y, then pitch about X, then roll about Z, composed in that
+    -- order -- which is what lib/sable.attitude has to invert. Written out
+    -- longhand rather than borrowed from a library so that a disagreement
+    -- between the two is a test failure and not a shared mistake.
+    local function orientation()
+      local s = world.ship
+      local hy, hp, hr = math.rad(-s.heading) / 2, math.rad(-(s.pitch or 0)) / 2,
+                         math.rad(-(s.roll or 0)) / 2
+
+      local cy, sy = math.cos(hy), math.sin(hy)
+      local cp, sp = math.cos(hp), math.sin(hp)
+      local cr, sr = math.cos(hr), math.sin(hr)
+
+      -- q = qYaw * qPitch * qRoll, with qYaw = (0, sy, 0, cy),
+      -- qPitch = (sp, 0, 0, cp) and qRoll = (0, 0, sr, cr).
+      local x = cy * sp * cr + sy * cp * sr
+      local y = sy * cp * cr - cy * sp * sr
+      local z = cy * cp * sr - sy * sp * cr
+      local w = cy * cp * cr + sy * sp * sr
+      return { x = x, y = y, z = z, w = w }
+    end
+
+    local function velocity()
+      local s = world.ship
+      local fx, fz = forward(s.heading)
+      return { x = fx * s.speed, y = s.vy, z = fz * s.speed }
+    end
+
+    world.sublevel = {
+      isInPlotGrid = function() return world.assembled end,
+      getUniqueId = function() check() return "0000-mock" end,
+      getName = function() check() return world.shipName or "" end,
+      setName = function(n) check() world.shipName = n end,
+      getLogicalPose = function()
+        check()
+        return {
+          position = { x = world.ship.x, y = world.ship.y, z = world.ship.z },
+          orientation = orientation(),
+          scale = { x = 1, y = 1, z = 1 },
+          rotationPoint = { x = 0, y = 0, z = 0 },
+        }
+      end,
+      getLastPose = function() check() return world.sublevel.getLogicalPose() end,
+      getVelocity = function() return velocity() end,
+      getLinearVelocity = function() check() return velocity() end,
+      -- Radians per second, as the physics engine reports it. lib/sable converts;
+      -- a mock that handed back degrees would hide the conversion being wrong.
+      getAngularVelocity = function()
+        check()
+        return { x = math.rad(world.spin.x or 0),
+                 y = math.rad(world.spin.y or 0),
+                 z = math.rad(world.spin.z or 0) }
+      end,
+      getCenterOfMass = function() check() return { x = 0, y = 0, z = 0 } end,
+      getMass = function() check() return world.mass end,
+      getInverseMass = function() check() return 1 / world.mass end,
+    }
+
+    world.aero = {
+      getAirPressure = function(x, y, z) return 1 - (y or 64) / 512 end,
+      getGravity = function() return { x = 0, y = -world.gravity, z = 0 } end,
+      getMagneticNorth = function() return { x = 0, y = 0, z = -1 } end,
+      getUniversalDrag = function() return world.dragH end,
+    }
+
+    return world.sublevel
   end
 
   --- A gimbal sensor wired as redstone rather than read as a peripheral.

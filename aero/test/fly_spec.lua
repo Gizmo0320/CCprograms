@@ -450,6 +450,154 @@ do
 end
 
 --------------------------------------------------------------------------------
+section("the obstacle guard")
+--------------------------------------------------------------------------------
+
+-- The case the terrain guard cannot help with, and the reason the forward
+-- sensor exists. A sheer cliff rising well above cruise altitude: the ground
+-- directly beneath the ship is a comfortable fifty blocks down the entire way
+-- in, so the clearance guard is perfectly happy right up until the ship stops.
+do
+  local WALL = {
+    name = "Kestrel",
+    controls = {
+      lift = { kind = "bearing", peripheral = "lift0", group = "all" },
+      main = { kind = "bearing", peripheral = "main0", group = "all",
+               pivot = { min = -30, max = 30 } },
+    },
+    instruments = { nav = "nav0", alt = "alt0", vel = "vel0",
+                    ground = "opt0", forward = "fwd0",
+                    dock = false, gimbal = false, stick = false, link = false },
+    limits = LIMITS,
+    mix = {
+      { demand = "lift",    control = "lift", as = "throttle" },
+      { demand = "forward", control = "main", as = "throttle" },
+      { demand = "yaw",     control = "main", as = "pivot", scale = 30 },
+    },
+  }
+
+  local function wallRig(withForward)
+    local world = mock.new{
+      lift = "lift0", main = "main0",
+      x = 0, y = 120, z = 0, heading = 0,
+      terrain = function(x, z)
+        if z > 300 then return 400 end       -- a cliff to the sky
+        return 64
+      end,
+    }
+    world.bearing("lift0", { count = 4, fuel = 100000, capacity = 100000, burn = 3000 })
+    world.bearing("main0", { count = 2, fuel = 100000, capacity = 100000, burn = 3000 })
+    world.navTable("nav0")
+    world.altimeter("alt0")
+    world.velocimeter("vel0")
+    world.optical("opt0", { range = 60 })
+    world.forwardOptical("fwd0", { range = 64 })
+    _G.peripheral = world.api
+
+    local craft = {}
+    for k, v in pairs(WALL) do craft[k] = v end
+    if not withForward then
+      local instruments = {}
+      for k, v in pairs(WALL.instruments) do instruments[k] = v end
+      instruments.forward = false
+      craft.instruments = instruments
+    end
+
+    hull.define(craft)
+    hull.claim()
+
+    return { world = world, fix = instruments.blank(),
+             ap = autopilot.new(hull.gains), fl = flight.new(), t = 0, log = {} }
+  end
+
+  -- Without the sensor, to establish that this really is a hole rather than
+  -- something the terrain guard was quietly covering.
+  local blind = wallRig(false)
+  local waypoints = {}
+  nav.put(waypoints, { name = "beyond", x = 0, y = 120, z = 600 })
+  local ctx = { waypoints = waypoints, limits = LIMITS }
+
+  blind.fl.state = "cruise"
+  blind.fl.alt = 120
+  blind.fl.plan = nav.plan(waypoints, { "beyond" }, 120)
+
+  -- Whether the ship reaches the cliff face at all, within a generous run. The
+  -- wall here is deliberately unclimbable, so a ship that sees it has exactly
+  -- one correct outcome: stop short. One that does not see it flies into it.
+  --
+  -- Measured this way rather than by altitude because the flight model's ground
+  -- collision lifts a ship onto whatever it is standing over, so past z = 300 it
+  -- rides up the cliff face like a lift -- which says nothing at all about
+  -- whether the autopilot saw it.
+  local function reachesWall(r)
+    for _ = 1, 900 do
+      sweep(r, ctx)
+      if r.world.ship.z >= 300 then return true end
+    end
+    return false
+  end
+
+  check(reachesWall(blind), "with no forward sensor the ship flies into the cliff")
+  check(blind.fl.guard ~= "obstacle", "and nothing ever saw it coming")
+
+  -- With it.
+  local seeing = wallRig(true)
+  seeing.fl.state = "cruise"
+  seeing.fl.alt = 120
+  seeing.fl.plan = nav.plan(waypoints, { "beyond" }, 120)
+
+  local fired = false
+  local hit = false
+  for _ = 1, 900 do
+    sweep(seeing, ctx)
+    if seeing.fl.guard == "obstacle" then fired = true end
+    if seeing.world.ship.z >= 300 then hit = true break end
+  end
+
+  check(fired, "with one, the guard sees the cliff coming")
+  check(seeing.world.ship.y > 200,
+        "and the ship climbs hard rather than flying on level",
+        seeing.world.ship.y)
+
+  -- Deliberately **not** asserted: that it stops short. A ship has no brakes.
+  -- Zeroing the forward demand removes the push and drag removes the speed
+  -- exponentially, so against something unclimbable the hull still drifts into
+  -- the face -- slowly, climbing all the way. The guard buys height and time and
+  -- that is all it buys. Asserting otherwise here would be writing down a
+  -- property the program does not have.
+  check(true, "against an unclimbable wall it buys height, not a stop")
+  check(seeing.fl.plan ~= nil and nav.current(seeing.fl.plan).name == "beyond",
+        "without abandoning the flight")
+
+  -- A ridge it *can* get over. The guard is not an abort: the ship climbs,
+  -- clears it, and carries on to the same waypoint.
+  local over = wallRig(true)
+  over.world.terrain = function(x, z)
+    if z > 300 and z < 360 then return 150 end
+    return 64
+  end
+  over.fl.state = "cruise"
+  over.fl.alt = 120
+  over.fl.plan = nav.plan(waypoints, { "beyond" }, 120)
+
+  local lowest = math.huge
+  for _ = 1, 1600 do
+    sweep(over, ctx)
+    local s = over.world.ship
+    if s.z > 295 and s.z < 365 then
+      local gap = s.y - over.world.terrain(s.x, s.z)
+      if gap < lowest then lowest = gap end
+    end
+    if s.z > 400 then break end
+  end
+
+  check(over.world.ship.z > 400, "a ridge it can clear is cleared",
+        over.world.ship.z)
+  check(lowest > 0, "without touching it", lowest)
+  check(over.fl.state == "cruise", "and the flight carries on", over.fl.state)
+end
+
+--------------------------------------------------------------------------------
 section("the fix going away")
 --------------------------------------------------------------------------------
 

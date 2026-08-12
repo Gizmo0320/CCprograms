@@ -497,6 +497,112 @@ do
 end
 
 --------------------------------------------------------------------------------
+section("sable")
+--------------------------------------------------------------------------------
+
+-- The quaternion maths, which is the part where a sign error puts the ship's
+-- "up" somewhere it is not and no amount of staring at the source tells you.
+do
+  local sable = require("lib.sable")
+
+  -- Identity: level, facing +Z, which is heading 0.
+  local tilt, pitch, roll, heading = sable.attitude({ x = 0, y = 0, z = 0, w = 1 })
+  check(near(tilt, 0), "an identity quaternion is level", tilt)
+  check(near(pitch, 0) and near(roll, 0), "with no pitch or roll")
+  check(near(heading, 0), "facing +Z, which is heading 0", heading)
+
+  -- A quarter turn about X: nose straight down, ninety degrees from level.
+  local h = math.sqrt(0.5)
+  tilt, pitch = sable.attitude({ x = h, y = 0, z = 0, w = h })
+  check(near(tilt, 90, 0.01), "a quarter turn about X is ninety from level", tilt)
+  check(near(pitch, -90, 0.01) or near(pitch, 90, 0.01),
+        "and is all pitch", pitch)
+
+  -- Upside down. This is the case the whole attitude guard exists for: the
+  -- ship's up is the world's down, and every lift command now pushes it at the
+  -- ground.
+  tilt = sable.attitude({ x = 1, y = 0, z = 0, w = 0 })
+  check(near(tilt, 180, 0.01), "a half turn is inverted", tilt)
+
+  tilt = sable.attitude({ x = 0, y = 0, z = 1, w = 0 })
+  check(near(tilt, 180, 0.01), "whichever axis it went over", tilt)
+
+  -- Yaw alone does not tilt anything, which is the property that stops a ship
+  -- simply turning from tripping the guard.
+  for _, degrees in ipairs({ 30, 90, 180, 270 }) do
+    local q = { x = 0, y = math.sin(math.rad(degrees) / 2), z = 0,
+                w = math.cos(math.rad(degrees) / 2) }
+    local t, _, _, hd = sable.attitude(q)
+    checkQuiet(near(t, 0, 0.01), "yaw " .. degrees .. " is still level", t)
+    checkQuiet(hd ~= nil, "and has a heading")
+  end
+  check(true, "yaw alone never counts as tilt")
+
+  -- A small lean is a small number, not a large one -- the guard's threshold is
+  -- meaningless if the reading is not proportional.
+  tilt = sable.attitude({ x = math.sin(math.rad(20) / 2), y = 0, z = 0,
+                          w = math.cos(math.rad(20) / 2) })
+  check(near(tilt, 20, 0.01), "a twenty degree lean reads as twenty", tilt)
+
+  check(sable.attitude(nil) == nil, "a quaternion that is not one is nil")
+  check(sable.attitude({ x = 0 }) == nil, "and so is an incomplete one")
+
+  check(near(sable.magnitude({ x = 3, y = 4, z = 0 }), 5), "magnitude is length")
+
+  -- The whole module degrades when the mod is absent, which is a configuration
+  -- this program has to run in.
+  local realSublevel, realAero = _G.sublevel, _G.aero
+  _G.sublevel, _G.aero = nil, nil
+  sable.available = nil
+  check(sable.present() == false, "with no CC: Sable, present() is false")
+  check(sable.read() == nil, "and read gives nil rather than an empty table")
+  check(sable.setName("x") == false, "and naming is refused, not fatal")
+
+  -- ...and when it is there but the contraption is not assembled, which is its
+  -- state on the pad and every time it is taken apart.
+  local mock = require("test.mockperipheral")
+  local w = mock.new{}
+  w.sable{ assembled = false }
+  _G.sublevel, _G.aero = w.sublevel, w.aero
+  sable.available = nil
+  check(sable.present() == true, "with CC: Sable, present() is true")
+  check(sable.read() == nil, "but an unassembled contraption reads nil")
+
+  w.assembled = true
+  w.ship.x, w.ship.y, w.ship.z = 10, 90, 20
+  w.ship.heading, w.ship.speed, w.ship.vy = 90, 6, -1
+  w.spin = { x = 0, y = 30, z = 0 }
+
+  local read = sable.read()
+  check(read ~= nil, "an assembled one reads")
+  check(read.pos and near(read.pos.x, 10) and near(read.pos.y, 90),
+        "with a position")
+  check(read.velocity and near(read.velocity.y, -1),
+        "a real velocity vector, not a differentiated one",
+        read.velocity and read.velocity.y)
+  check(near(read.spin, 30, 0.01),
+        "and angular velocity converted from radians to degrees", read.spin)
+  check(near(read.tilt, 0, 0.01), "level, because the ship is", read.tilt)
+  check(near(read.heading, 90, 0.01),
+        "and the orientation agrees with the heading it was given", read.heading)
+  check(read.mass == w.mass, "mass comes through", read.mass)
+
+  -- Tilt the ship and the quaternion follows, which is what makes the guard
+  -- testable at all.
+  w.ship.pitch, w.ship.roll = 40, 0
+  read = sable.read()
+  check(near(read.tilt, 40, 0.5), "a pitched ship reads as tilted", read.tilt)
+
+  w.ship.pitch, w.ship.roll = 0, 100
+  read = sable.read()
+  check(read.tilt > 90, "and one rolled past ninety reads as inverted", read.tilt)
+
+  _G.sublevel, _G.aero = realSublevel, realAero
+  sable.available = nil
+  _G.peripheral = realPeripheral
+end
+
+--------------------------------------------------------------------------------
 section("flight: states")
 --------------------------------------------------------------------------------
 
@@ -698,6 +804,43 @@ do
         st.state)
   check(st.plan == nil, "the plan is dropped with it")
 
+  -- 5. An obstacle ahead. The clearance guard is a floor and nothing more: a
+  -- ship at cruise flying at the side of a mountain has perfect clearance
+  -- underneath it the whole way in.
+  st = flight.new()
+  st.state = "cruise"
+  st.alt = 100
+  st.plan = nav.plan(waypoints, { "far" }, 100)
+
+  local _, clear = flight.step(st, fix({ ahead = 400 }), ctx, 1)
+  check(st.guard == nil, "something a long way ahead is not an obstacle")
+  check(clear.speed == 12, "and the ship carries on", clear.speed)
+
+  local _, g5, ev5 = flight.step(st, fix({ ahead = 5 }), ctx, 2)
+  check(st.guard == "obstacle", "something close ahead is")
+  check(g5.speed == 0, "the ship stops")
+  check(g5.vs == 4, "and climbs over it", g5.vs)
+  check(st.plan ~= nil, "without abandoning the flight")
+  check(#ev5 > 0 and ev5[1].why == "obstacle", "saying why")
+
+  -- Speed is what makes an obstacle dangerous. The same rock is nothing at a
+  -- crawl and a problem at cruise.
+  st.guard = nil
+  flight.step(st, fix({ ahead = 20, speed = 1 }), ctx, 3)
+  check(st.guard == nil, "twenty blocks ahead at walking pace is fine", st.guard)
+  flight.step(st, fix({ ahead = 20, speed = 12 }), ctx, 4)
+  check(st.guard == "obstacle", "the same twenty blocks at cruise is not")
+
+  -- Nil is not zero. Most hulls have no forward sensor at all, and one that read
+  -- zero would stop the ship dead in clear air.
+  st.guard = nil
+  flight.step(st, fix({ ahead = nil }), ctx, 5)
+  check(st.guard == nil, "no forward sensor is no guard, not an obstacle at zero")
+
+  -- ...and the guard stands down once it is past.
+  flight.step(st, fix({ ahead = 400 }), ctx, 6)
+  check(st.guard == nil, "and it releases once the way is clear")
+
   -- An update must never run while the ship is flying.
   st = flight.new()
   check(flight.busy(st) == false, "a parked ship may be updated")
@@ -705,6 +848,125 @@ do
   check(flight.busy(st) == true, "a flying one may not")
   st.state = "loiter"
   check(flight.busy(st) == true, "nor one merely hovering")
+  st.state = "manual"
+  check(flight.busy(st) == true,
+        "nor one being flown by hand, which is the worst moment of the three")
+end
+
+--------------------------------------------------------------------------------
+section("flight: attitude and the pilot's hands")
+--------------------------------------------------------------------------------
+
+do
+  local nav    = require("lib.nav")
+  local flight = require("lib.flight")
+  local config = require("lib.config")
+
+  local waypoints = {}
+  nav.put(waypoints, { name = "base", x = 0, y = 64, z = 0, kind = "pad" })
+  nav.put(waypoints, { name = "far",  x = 0, y = 64, z = 3000 })
+
+  local limits = { cruise = 12, climb = 4, descend = 3, clearance = 6 }
+  local ctx = { waypoints = waypoints, limits = limits, home = "base" }
+
+  local function fix(t)
+    local f = { x = 0, y = 100, z = 100, alt = 100, heading = 0, speed = 12,
+                vs = 0, usable = true, levelled = true, clearance = 40,
+                burn = 99999 }
+    for k, v in pairs(t or {}) do f[k] = v end
+    return f
+  end
+
+  local function flying()
+    local st = flight.new()
+    st.state = "cruise"
+    st.alt = 100
+    st.plan = nav.plan(waypoints, { "far" }, 100)
+    return st
+  end
+
+  -- A modest lean: stop navigating, hold, ask for level. The plan survives,
+  -- because a ship that leaned over in a gust and came back should carry on.
+  local st = flying()
+  local _, g, ev = flight.step(st, fix({ tilt = 40 }), ctx, 1)
+  check(st.guard == "attitude", "a lean past the limit is a guard")
+  check(g.speed == 0, "the ship stops going anywhere")
+  check(g.alt ~= nil, "while still holding altitude")
+  check(g.level == true, "and asks to be levelled")
+  check(st.plan ~= nil, "the flight is not abandoned")
+  check(#ev > 0 and ev[1].why == "tilt", "saying why", ev[1] and ev[1].why)
+
+  flight.step(st, fix({ tilt = 2 }), ctx, 2)
+  check(st.guard == nil, "and it releases once the ship is level again")
+
+  -- Past the abort angle the hull is handed back, and this is the important
+  -- one: on a ship leaning past ninety, the lift demand pushes it at the
+  -- ground. The loop whose job is to stop that happening is what does it.
+  st = flying()
+  local _, g2, ev2 = flight.step(st, fix({ tilt = 120 }), ctx, 1)
+  check(g2.release == true, "an inverted ship is let go of entirely")
+  check(st.state == "idle", "and the autopilot stops flying it", st.state)
+  check(st.plan == nil, "the plan goes with it")
+  check(#ev2 > 0 and ev2[#ev2].why == "inverted", "saying why",
+        ev2[#ev2] and ev2[#ev2].why)
+
+  -- Spinning fast is out of control whatever the current angle -- the ship is
+  -- simply between two attitudes. Only measurable with CC: Sable.
+  st = flying()
+  local _, g3, ev3 = flight.step(st, fix({ tilt = 5, spin = 200 }), ctx, 1)
+  check(g3.release == true, "a tumbling ship is let go of even while level")
+  check(#ev3 > 0 and ev3[#ev3].why == "tumbling", "saying why")
+
+  -- No attitude source at all: no guard. A gap to know about, not a reason to
+  -- invent a reading.
+  st = flying()
+  flight.step(st, fix({ tilt = nil, spin = nil }), ctx, 1)
+  check(st.guard == nil, "a hull with no attitude source gets no attitude guard")
+  check(st.state == "cruise", "and carries on", st.state)
+
+  -- Getting close to the ground is a lean-tolerant business: a ship settling
+  -- onto uneven ground will tilt, and aborting the landing for it would mean
+  -- never landing anywhere interesting.
+  st = flight.new()
+  st.state = "land"
+  flight.step(st, fix({ tilt = 40, clearance = 0.5, vs = 0, alt = 64 }), ctx, 1)
+  check(st.guard ~= "attitude", "a lean while landing does not stop the landing")
+
+  ------------------------------------------------------------------------------
+  -- The pilot's hands.
+
+  local held = { x = 0.8, z = 0, magnitude = 0.8, active = true, held = true }
+
+  st = flying()
+  local _, g4, ev4 = flight.step(st, fix({ stick = held }), ctx, 1)
+  check(st.state == "manual", "touching the joystick takes the ship", st.state)
+  check(g4.release == true, "and the autopilot gets out of the way")
+  check(st.plan == nil,
+        "the plan is dropped -- a ship must not fly off again when you let go")
+  check(#ev4 > 0 and ev4[1].why == "manual", "saying why")
+
+  -- Still held: stay out of the way.
+  local _, g5 = flight.step(st, fix({ stick = held }), ctx, 2)
+  check(g5.release == true, "and stays out of the way while it is held")
+
+  -- Let go. Not instantly -- a pause between inputs is not a handover.
+  local idle = { x = 0, z = 0, magnitude = 0, active = false, held = false }
+  flight.step(st, fix({ stick = idle }), ctx, 3)
+  check(st.state == "manual", "a pause between inputs is not a handover", st.state)
+
+  local _, g6, ev6 = flight.step(st, fix({ stick = idle }),
+                                 ctx, 3 + config.handback + 1)
+  check(st.state == "loiter", "letting go hands it back after a moment", st.state)
+  check(g6.release ~= true, "and the autopilot catches the ship")
+  check(#ev6 > 0 and ev6[#ev6].why == "handback", "saying why")
+
+  -- A stick that merely exists is not a stick being used. `active` is reported
+  -- after the mod's own deadzone, so this is "somebody is flying" rather than
+  -- "somebody brushed past it".
+  st = flying()
+  flight.step(st, fix({ stick = idle }), ctx, 1)
+  check(st.state == "cruise", "an idle joystick changes nothing", st.state)
+  check(st.guard == nil, "and is not a guard")
 end
 
 --------------------------------------------------------------------------------

@@ -86,25 +86,57 @@ function instruments.fuse(prev, raw, gps, now)
   raw  = raw or {}
   now  = now or 0
 
+  -- CC: Sable, when the ship is an assembled sub-level. Strictly better than
+  -- every sensor here -- real velocity, real orientation, real angular velocity
+  -- -- so it is taken first and the derived versions fill in behind it.
+  local phys = raw.sable
+
   local fix = {
     at = now,
     pitch = raw.pitch, roll = raw.roll,
     clearance = raw.clearance, ground = raw.ground,
+    ahead = raw.ahead, aheadBlock = raw.aheadBlock,
     docked = raw.docked, stick = raw.stick, signals = raw.signals,
     beacon = raw.beacon, beaconRange = raw.beaconRange, swivel = raw.swivel,
     tiltSource = raw.tiltSource,
     fuel = raw.fuel, capacity = raw.capacity, burn = raw.burn,
     thrust = raw.thrust, lift = raw.lift,
     faults = raw.faults,
+    mass = phys and phys.mass or nil,
+    assembled = phys ~= nil,
   }
+
+  -- Attitude. The physics engine's is exact and complete; the gimbal sensor's is
+  -- two angles; the redstone reader's is sixteen steps of those. Taken in that
+  -- order, and `tilt` -- the single angle from level, which is what the attitude
+  -- guard runs on -- only exists at all with CC: Sable, so without it the guard
+  -- falls back to whichever of pitch and roll is worse.
+  if phys and phys.tilt then
+    fix.tilt, fix.pitch, fix.roll = phys.tilt, phys.pitch, phys.roll
+    fix.tiltSource = "sable"
+  elseif fix.pitch or fix.roll then
+    fix.tilt = math.max(math.abs(fix.pitch or 0), math.abs(fix.roll or 0))
+  end
+
+  -- Angular velocity, which nothing but CC: Sable can measure. A ship can be
+  -- perfectly level and still be a quarter of a second from being upside down.
+  fix.spin = phys and phys.spin or nil
 
   local dt = prev.at and (now - prev.at) or nil
   if dt and dt <= 0 then dt = nil end
 
   -- Position -----------------------------------------------------------------
 
+  -- The navigation table first even though the physics pose is arguably more
+  -- exact: the table reports a *projected world* position, which is the frame
+  -- every waypoint is written in, and a sub-level's own pose is not necessarily
+  -- the same numbers. Mixing two frames in one fix would be a ship that jumps
+  -- several blocks whenever one source drops out.
   local position = nav.point(raw.pos) or nav.point(gps)
-  local source   = nav.point(raw.pos) and "nav" or (nav.point(gps) and "gps" or nil)
+    or (phys and nav.point(phys.pos))
+  local source = nav.point(raw.pos) and "nav"
+    or (nav.point(gps) and "gps"
+    or (phys and nav.point(phys.pos) and "sable" or nil))
 
   if position then
     fix.x, fix.y, fix.z = position.x, position.y, position.z
@@ -134,7 +166,14 @@ function instruments.fuse(prev, raw, gps, now)
   -- a ship being pushed sideways has one heading and a different course -- so it
   -- is not substituted here. A hull with no navigation table simply has no
   -- heading, and lib/flight refuses to navigate rather than steering on a guess.
-  fix.heading = tonumber(raw.heading) or prev.heading
+  --
+  -- CC: Sable's orientation gives a heading too, but it is the sub-level's own
+  -- +Z -- whichever way the ship happened to be built facing -- so it may sit at
+  -- a constant offset from what the table calls the heading. Good enough to fly
+  -- on when there is nothing else, wrong to prefer when there is.
+  fix.heading = tonumber(raw.heading)
+    or (phys and phys.heading)
+    or prev.heading
 
   -- Altitude -----------------------------------------------------------------
 
@@ -166,17 +205,27 @@ function instruments.fuse(prev, raw, gps, now)
 
   -- Velocity -----------------------------------------------------------------
 
-  if dt and prev.x and fix.x then
+  -- The real thing when there is one. Differentiating position is smoothed, and
+  -- smoothing costs lag in exactly the derivative the altitude loop uses for
+  -- damping -- so a measured velocity is not a small improvement here, it is a
+  -- better-behaved control loop.
+  if phys and phys.velocity then
+    fix.vx, fix.vz = phys.velocity.x, phys.velocity.z
+    fix.vs = phys.velocity.y
+    fix.velocitySource = "sable"
+
+  elseif dt and prev.x and fix.x then
     fix.vx = blend(prev.vx, (fix.x - prev.x) / dt)
     fix.vz = blend(prev.vz, (fix.z - prev.z) / dt)
+    fix.vs = (dt and prev.alt and fix.alt)
+      and blend(prev.vs, (fix.alt - prev.alt) / dt) or (prev.vs or 0)
+    fix.velocitySource = "derived"
+
   else
     fix.vx, fix.vz = prev.vx or 0, prev.vz or 0
-  end
-
-  if dt and prev.alt and fix.alt then
-    fix.vs = blend(prev.vs, (fix.alt - prev.alt) / dt)
-  else
-    fix.vs = prev.vs or 0
+    fix.vs = (dt and prev.alt and fix.alt)
+      and blend(prev.vs, (fix.alt - prev.alt) / dt) or (prev.vs or 0)
+    fix.velocitySource = "derived"
   end
 
   -- Ground speed from the components rather than from the velocity sensor: the

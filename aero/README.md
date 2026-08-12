@@ -35,6 +35,11 @@ allowed to depend on the link.
 - A **navigation table** on the hull, or the ship can hold altitude but cannot
   navigate. An **altitude sensor** and an **optical sensor** pointing down are
   both strongly wanted; see Guards.
+- **[CC: Sable](https://techtastic.github.io/CC-Sable/)** is optional and worth
+  having. It exposes the physics object itself — real velocity, real
+  orientation, angular velocity, mass — which is strictly better than any sensor
+  block and is what makes the attitude guard able to tell a tumbling ship from a
+  banking one. Everything works without it; less well.
 
 ## Install
 
@@ -236,7 +241,8 @@ to say "this hull has none, stop looking and stop warning".
 | `alt` | `altitude_sensor` | height. Without it *and* `nav`, the pilot hands the hull back |
 | `vel` | `velocity_sensor` | speed, as a cross-check on the differentiated figure |
 | `gimbal` | `gimbal_sensor` | pitch and roll, as real angles |
-| `ground` | `optical_sensor` | clearance. No sensor means no terrain guard |
+| `ground` | `optical_sensor` | clearance below. No sensor means no terrain guard |
+| `forward` | `optical_sensor` | what is ahead. No sensor means no obstacle guard |
 | `dock` | `docking_connector` | what the ship is docked to |
 | `stick` | `analogue_joystick` | the pilot's hands |
 | `link` | `advanced_data_link` | a live target position |
@@ -368,9 +374,34 @@ out.
 
 ## Guards
 
-Four rules outrank the flight plan. All four are checked every sweep, in this
-order, and every one of them writes a line in the log — "why did it turn round"
-is the question the log exists to answer.
+Seven rules outrank the flight plan. All are checked every sweep, in this order,
+and every one writes a line in the log — "why did it turn round" is the question
+the log exists to answer.
+
+**The pilot's hands.** Touch the joystick and the autopilot lets go of the hull
+entirely, because two things commanding one ship is worse than either alone. It
+also **drops the flight plan**: a ship that quietly resumed a flight to somewhere
+else the moment you let go would be the most alarming thing this program could
+do. Let go and it waits a few seconds — a pause between inputs is not a handover
+— then catches the ship in a hold. Fly on from there with a new order.
+
+**Attitude.** Past `limits.tilt` (25° by default) the ship stops navigating,
+holds its height and asks any trim control to level. The plan survives, because a
+ship that leaned in a gust and came back should carry on.
+
+Past `limits.tiltAbort` (70°) it hands the hull back and stops flying altogether,
+and this is the one worth understanding. Every control law here assumes the lift
+demand pushes the ship *away* from the ground. Past about seventy degrees it
+pushes sideways; past ninety it pushes **down**. A ship on its back with the
+altitude hold still calling for more lift is being flown into the ground at full
+power by the loop whose whole job is preventing that. There is no cleverer answer
+available — the autopilot has no real attitude authority, and the physics engine
+rights most hulls on its own given the chance.
+
+With CC: Sable the same guard also watches **angular velocity**: a ship spinning
+fast is out of control whatever its current angle, because it is simply between
+two attitudes. Without CC: Sable there is no spin reading and a level-but-tumbling
+ship is not caught.
 
 **No vertical reference.** If the ship cannot tell you its height it cannot be
 flown, so the hull is handed back to redstone. Worse than flying; much better
@@ -381,6 +412,19 @@ The plan is not abandoned: the ship climbs, clears the hill, and carries on to
 the same waypoint. Exempt while landing or docking, where getting close to the
 ground is the point. Needs a downward optical sensor; without one there is no
 terrain guard at all.
+
+**An obstacle ahead.** The clearance guard is a *floor* and nothing else — a
+ship at cruise flying at the **side** of a mountain has perfect clearance
+underneath it the whole way in. A forward-facing optical sensor closes that: the
+ship stops pushing, climbs, and adopts the height it had to climb to for the rest
+of the flight. Without a `forward` sensor there is no guard here at all.
+
+Know what it does not do. **A ship has no brakes.** Zeroing the forward demand
+removes the push; drag removes the speed, exponentially, and a hull at cruise
+coasts a long way while it climbs — thirty-odd blocks is typical. Against a ridge
+it can get over, the climb wins. Against something unclimbable it will still
+drift into the face, slowly, climbing all the way. Raise `config.reaction` on a
+hull with little drag.
 
 **No usable fix.** The navigation table going quiet for a few seconds is normal,
 and the ship carries on by dead reckoning. Past about eight seconds it stops
@@ -441,7 +485,7 @@ Results are written to `/test-summary.txt` and `/test-*-results.txt` on the
 emulated computer rather than stdout, because headless mode redraws the entire
 terminal on every update.
 
-439 assertions. `spec.lua` covers each module on its own — the heading
+521 assertions. `spec.lua` covers each module on its own — the heading
 arithmetic and the wrap, plans and legs, sensor fusion and the ageing of a
 dead-reckoned fix, the PID loops and the integral clamp, every flight state and
 all four guards, the hull abstraction over a mock of the real peripheral API, the

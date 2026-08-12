@@ -253,7 +253,10 @@ function autopilot.step(st, fix, goal, now)
       pid(st, "hdg", err, -err, g.hdgP, 0, g.hdgD, 0, dt),
       -1, 1)
 
-    demands.pitch = clamp(demands.yaw * g.bank, -1, 1)
+    -- `level` is the attitude guard asking for wings level. Banking into a turn
+    -- is a nicety; banking a hull that is already leaning further than the guard
+    -- is happy with is the opposite of what was asked for.
+    demands.pitch = goal.level and 0 or clamp(demands.yaw * g.bank, -1, 1)
     demands.headingError = err
   end
 

@@ -32,6 +32,7 @@ local config      = require("lib.config")
 local net         = require("lib.net")
 local state       = require("lib.state")
 local hull        = require("lib.hull")
+local sable       = require("lib.sable")
 local instruments = require("lib.instruments")
 local autopilot   = require("lib.autopilot")
 local nav         = require("lib.nav")
@@ -98,9 +99,9 @@ local function redraw()
       ("%.1f"):format(fix.speed or 0)),
     ("pos %s"):format(fix.x and ("%.0f %.0f %.0f"):format(fix.x, fix.y or 0, fix.z) or "--"),
     ("fix %s"):format(instruments.age(fix, now())),
-    ("tilt %s %s"):format(
-      fix.pitch and ("%+.0f"):format(fix.pitch) or "--",
-      fix.roll and ("%+.0f"):format(fix.roll) or "--"),
+    ("tilt %s%s"):format(
+      fix.tilt and ("%.0f"):format(fix.tilt) or "--",
+      fix.spin and (("  spin %.0f"):format(fix.spin)) or ""),
     ("why %s"):format(tostring(pilot.fl.why)),
   }
 
@@ -162,6 +163,11 @@ local function telemetry()
     roll   = fix.roll,
     beacon = fix.beacon,
     beaconRange = fix.beaconRange,
+    tilt   = fix.tilt,
+    spin   = fix.spin,
+    ahead  = fix.ahead,
+    mass   = fix.mass,
+    assembled = fix.assembled,
     flight = plan,
     goal   = pilot.fl.goal,
     faults = fix.faults,
@@ -255,6 +261,11 @@ end
 
 local function sweep(t, dt)
   pilot.raw = hull.read(t)
+
+  -- CC: Sable, when there is one and the contraption is assembled. Merged into
+  -- the same raw table rather than passed separately, so lib/instruments has one
+  -- argument to reason about and the preference order lives in one place.
+  pilot.raw.sable = sable.read()
   pilot.fix = instruments.fuse(pilot.fix, pilot.raw, gpsFix(t), t)
 
   local ctx = {
@@ -395,6 +406,11 @@ local function handle(from, msg)
     -- which is the only place it helps while you are standing on the ground
     -- watching the thing come in.
     hull.setPlateName(name)
+
+    -- ...and onto the physics object itself, which is what Sable shows for the
+    -- contraption. Three places for one name looks like a lot until you are
+    -- looking for a particular ship among six.
+    sable.setName(name)
 
     net.send(from, { type = "ack", of = "rename" })
     return

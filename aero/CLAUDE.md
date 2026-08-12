@@ -313,7 +313,29 @@ Any state that holds a heading **latches it once on entry**. A target of
 construction and the ship slowly rotates for as long as you leave it. It also
 looks entirely correct in the source.
 
-Four guards, evaluated before the state logic, in this order:
+Seven guards, evaluated before the state logic, in this order:
+
+0. **The pilot's hands.** The joystick is being used, so let go of the hull
+   entirely and drop the plan. Two things commanding one ship is worse than
+   either alone, and a ship that resumed a flight the moment the stick was
+   released would be the most alarming thing here. `active` is used rather than
+   raw tilt: the mod applies its own deadzone and reports the result.
+0b. **Attitude.** Past `limits.tilt`, stop navigating and ask for level. Past
+   `limits.tiltAbort`, hand the hull back — every law here assumes lift pushes
+   *away* from the ground, and past ninety degrees it pushes the ship at it, so
+   an inverted ship with the altitude hold still running is being flown into the
+   ground by the loop meant to prevent that. With CC: Sable the same guard also
+   fires on angular velocity, which catches a level ship that is a quarter of a
+   second from being upside down.
+0c. **An obstacle ahead.** The clearance guard is a floor and nothing more; a
+   ship flying at the *side* of a mountain has perfect clearance the whole way
+   in. The guard climbs and **adopts the height it climbed to** for the rest of
+   the flight — without that it is a bounce loop, because the forward sensor
+   stops seeing the ridge the instant the ship clears it and the altitude hold
+   then flies it straight back down into it. It does not stop the ship: there
+   are no brakes, drag is exponential, and a hull at cruise coasts thirty-odd
+   blocks. Against something unclimbable this buys height and time and nothing
+   else, and `lib/flight.lua` says so where the guard is written.
 
 1. **No vertical reference.** Without an altitude there is no rate of climb, so
    the lift demand sits at zero and the ship falls under program control. Hand it
@@ -332,6 +354,31 @@ log exists to answer. The bingo diversion originally emitted nothing — a ship
 already cruising stays cruising, and `goTo` returns nothing when nothing changed,
 so the single most important entry the log will ever hold was the one it never
 wrote.
+
+### CC: Sable
+
+`lib/sable.lua` is the only other module that touches an API, and it has to be:
+`sublevel` and `aero` are **globals**, not peripherals, so `lib/hull.lua` cannot
+reach them. Where CC: Sable is installed and the contraption is assembled, it
+supersedes the sensors — a real velocity vector rather than a smoothed
+derivative (which matters: the smoothing costs lag in exactly the term the
+altitude loop damps with), a real orientation quaternion, and **angular
+velocity**, which nothing else here can measure at all.
+
+Every `sublevel` call throws when the contraption is unassembled, which is its
+state on the pad and every time it is taken apart — so that is a normal
+configuration to degrade through, not an error. `read()` returns nil rather than
+an empty table, so a caller can tell "no data" from "data that happens to be
+zero", which on a velocity is the difference between stationary and unknown.
+
+`sable.attitude` is pure and separately tested, because it is the part where a
+sign error puts the ship's up somewhere it is not. It deliberately does **not**
+produce Euler angles for the guard: `tilt` is the angle between the ship's own up
+and the world's, straight out of `up.y` in the rotation matrix. No convention to
+argue about, no gimbal lock, one number for "how far from level" whichever way
+the ship is facing. `test/mockperipheral.lua` composes the quaternion from the
+ship's angles longhand rather than sharing the code, so a disagreement between
+the two is a test failure and not a shared mistake.
 
 ### State persistence
 

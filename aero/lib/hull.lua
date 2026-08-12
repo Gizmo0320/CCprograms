@@ -168,7 +168,18 @@ local ROLES = {
   alt    = { altitude_sensor = true },
   vel    = { velocity_sensor = true },
   gimbal = { gimbal_sensor = true },
-  ground = { optical_sensor = true },
+  -- Two optical sensors, and which is which is a decision nobody can make by
+  -- looking. `ground` points **down** and feeds the terrain guard; `forward`
+  -- points along the ship's nose and feeds the obstacle guard.
+  --
+  -- Only `ground` is auto-found, and only when there is exactly one sensor --
+  -- see define. A hull with one sensor mounted facing forward and picked up as
+  -- the ground sensor has a terrain guard reading the distance to a hillside it
+  -- is about to hit as though it were altitude, which is worse than having no
+  -- guard at all.
+  ground  = { optical_sensor = true },
+  forward = { optical_sensor = true },
+
   dock   = { docking_connector = true },
   stick  = { analogue_joystick = true },
   link   = { advanced_data_link = true },
@@ -565,6 +576,12 @@ function hull.define(craft)
           role .. ": " .. tostring(side) .. " is not attached"
         side = nil
       end
+    elseif role == "forward" then
+      -- Never auto-found. Two optical sensors are indistinguishable by type, so
+      -- picking one to be the forward sensor would be a coin toss between "the
+      -- obstacle guard works" and "the terrain guard is reading a hillside".
+      side = nil
+
     else
       side = hull.find(types)
     end
@@ -576,6 +593,25 @@ function hull.define(craft)
         kind = select(2, pcall(peripheral.getType, side)),
       }
     end
+  end
+
+  -- ...and the same trap from the other end. One sensor auto-found as `ground`
+  -- is the common, correct case. Two sensors with only one named means the
+  -- second is doing nothing, and the odds are even that the one picked up is the
+  -- wrong one.
+  local sensors = 0
+  for _, name in ipairs((function()
+    local ok, list = pcall(peripheral.getNames)
+    return ok and list or {}
+  end)()) do
+    local okType, kind = pcall(peripheral.getType, name)
+    if okType and kind == "optical_sensor" then sensors = sensors + 1 end
+  end
+
+  if sensors > 1 and (named.ground == nil or named.forward == nil) then
+    hull.problems[#hull.problems + 1] =
+      ("%d optical sensors: name `ground` and `forward` in instruments, or one is guessed at")
+        :format(sensors)
   end
 
   -- The navigation table is the only instrument whose absence is worth saying
@@ -677,6 +713,16 @@ function hull.claim()
   if ground then
     local want = (hull.limits.clearance or config.clearance) * 2
     call("ground", ground.side, "setRange", math.floor(want))
+  end
+
+  -- The forward sensor wants to see much further: far enough that the obstacle
+  -- guard has time to stop the ship, which is a function of cruise speed rather
+  -- than of clearance.
+  local forward = hull.instruments.forward
+  if forward then
+    local cruise = tonumber(hull.limits.cruise) or 10
+    local want = math.max(cruise * config.reaction * 2, config.standoff * 2)
+    call("forward", forward.side, "setRange", math.floor(want))
   end
 end
 
@@ -949,6 +995,16 @@ function hull.read(now)
     if call("ground", inst.ground.side, "hasHit") == true then
       raw.clearance = tonumber((call("ground", inst.ground.side, "getDistance")))
       raw.ground    = call("ground", inst.ground.side, "getBlock")
+    end
+  end
+
+  -- What is in front. Same nil-is-not-zero rule as the ground sensor, and it
+  -- matters more here: a forward sensor that read zero when it saw nothing would
+  -- have the obstacle guard stopping the ship dead in clear air.
+  if inst.forward then
+    if call("forward", inst.forward.side, "hasHit") == true then
+      raw.ahead = tonumber((call("forward", inst.forward.side, "getDistance")))
+      raw.aheadBlock = call("forward", inst.forward.side, "getBlock")
     end
   end
 

@@ -17,6 +17,8 @@
 --   land       the last few blocks, until the ground.
 --   dock       like land, but ending on a docking connector rather than dirt.
 --   loiter     holding altitude and heading, going nowhere, waiting.
+--   manual     somebody has the joystick. The hull is handed back and the
+--              autopilot keeps out of the way until they let go.
 --   emergency  a controlled descent to the ground, wherever we happen to be.
 --
 -- `idle` hands the hull back rather than holding everything at zero. A parked
@@ -31,23 +33,45 @@
 -- reason this file is pure: each one is a decision that must be provably right,
 -- and none of them needs anything from the world that the fix does not carry.
 --
---   1. **No vertical reference.** Without an altitude there is no rate of climb,
+--   1. **The pilot's hands.** Somebody has taken the joystick. Get out of the
+--      way -- two things commanding one hull is worse than either of them alone.
+--   2. **Attitude.** Past a lean the autopilot cannot help with, stop flying it.
+--      Past one where "up" is not up any more, stop touching it: see below.
+--   3. **No vertical reference.** Without an altitude there is no rate of climb,
 --      so there is no vertical loop, so the lift demand would sit at zero and
 --      the ship would fall out of the sky under program control. Hand it back
 --      instead. Worse than flying; much better than a powered descent into the
 --      ground.
---   2. **Ground clearance.** Below the limit, climb -- whatever the flight plan
---      said, and whatever the altitude hold wanted. The one rule that outranks
---      the mission. Exempt during `land`, `approach` and `dock`, where getting
---      close to the ground is the entire objective.
---   3. **No usable fix.** Stop navigating and loiter. Dead reckoning cannot
+--   4. **Ground clearance.** Below the limit, climb -- whatever the flight plan
+--      said, and whatever the altitude hold wanted. Exempt during `land`,
+--      `approach` and `dock`, where getting close to the ground is the entire
+--      objective.
+--   5. **An obstacle ahead.** The clearance guard is a floor and nothing else: a
+--      ship at cruise flying at the *side* of a mountain has perfect clearance
+--      underneath it the whole way in. A forward-facing optical sensor closes
+--      that, and without one there is simply no guard here.
+--   6. **No usable fix.** Stop navigating and loiter. Dead reckoning cannot
 --      correct itself and its error grows without bound; a ship that kept flying
 --      a twenty-second-old guess would look perfectly healthy on the dashboard
 --      right up until it hit something.
---   4. **Bingo fuel.** Turn for home while there is still enough to get there.
+--   7. **Bingo fuel.** Turn for home while there is still enough to get there.
 --      Latched: fuel that recovers because a tank was topped up does not cancel
 --      a diversion already begun, because the diversion is now the plan and
 --      changing your mind twice is how ships end up in the sea.
+--
+-- ## Why the attitude guard hands the hull back rather than trying harder
+--
+-- Every control law in this program assumes the lift demand pushes the ship away
+-- from the ground. That is true while it is roughly level. On a hull leaning
+-- past about seventy degrees the lift pushes it sideways, and past ninety it
+-- pushes it **down** -- so a ship on its back with the altitude hold still
+-- calling for more lift is being flown into the ground, at full power, by the
+-- loop whose entire job is to stop that happening.
+--
+-- There is no cleverer answer available from here. The autopilot has no direct
+-- attitude authority worth the name; the physics engine rights most hulls on its
+-- own given the chance. So past `tiltAbort` the hull is handed back and the
+-- ship is left alone, which is the one action guaranteed not to make it worse.
 --
 -- A guard produces a goal and a reason. It never silently changes the plan --
 -- every one of them emits an event, because "why did it turn round" is the
@@ -69,7 +93,10 @@ local NAVIGATING = { climb = true, cruise = true, descend = true, approach = tru
 -- guard, and by `update` being refused.
 local AIRBORNE = { takeoff = true, climb = true, cruise = true, descend = true,
                    approach = true, land = true, dock = true, loiter = true,
-                   emergency = true }
+                   emergency = true,
+                   -- Somebody is flying it by hand, which is the last moment to
+                   -- be replacing lib/hull.lua underneath them.
+                   manual = true }
 
 --------------------------------------------------------------------------------
 
@@ -85,6 +112,7 @@ function flight.new()
     alt   = nil,        -- the cruise altitude this flight is using
     home  = nil,        -- waypoint name to divert to
     dockTo = nil,       -- pad name, when the flight ends in a dock
+    handsAt = nil,      -- when the joystick was last touched
   }
 end
 
@@ -247,7 +275,97 @@ local function guards(st, fix, ctx, now)
   local limits = ctx.limits or {}
   local floor  = tonumber(limits.clearance) or config.clearance
 
-  -- 1. No vertical reference ---------------------------------------------------
+  -- 1. The pilot's hands -------------------------------------------------------
+
+  -- `active` rather than the raw tilt: the mod applies its own deadzone and
+  -- reports the result, so this is "somebody is flying" and not "somebody
+  -- brushed past it".
+  local hands = fix.stick ~= nil and (fix.stick.active == true or fix.stick.held == true)
+
+  if hands then
+    st.handsAt = now
+    if st.state ~= "manual" then
+      -- The plan goes with it. A pilot who takes the stick has taken over, and a
+      -- ship that quietly resumed a flight to somewhere else the moment they let
+      -- go would be the single most alarming thing this program could do.
+      st.plan = nil
+      st.guard = "manual"
+      return { release = true }, goTo(st, "manual", "manual", now)
+    end
+    st.guard = "manual"
+    return { release = true }
+  end
+
+  if st.state == "manual" then
+    -- Let go. Wait a little before taking it back, so a pause between inputs is
+    -- not a handover, then catch the ship in a hold rather than resuming
+    -- anything.
+    if (now - (st.handsAt or now)) < config.handback then
+      st.guard = "manual"
+      return { release = true }
+    end
+    st.guard = nil
+    return nil, goTo(st, "loiter", "handback", now)
+  end
+
+  -- 2. Attitude ----------------------------------------------------------------
+
+  local tilt  = tonumber(fix.tilt)
+  local spin  = tonumber(fix.spin)
+  local lean  = tonumber(limits.tilt) or config.tiltLimit
+  local abort = tonumber(limits.tiltAbort) or config.tiltAbort
+
+  -- Nil is not level. A hull with no attitude source at all gets no attitude
+  -- guard, which is a gap to be aware of rather than a reason to invent a
+  -- reading -- and the same rule as every other instrument here.
+  if tilt then
+    if tilt >= abort then
+      st.guard = "attitude"
+      local event = nil
+      if st.state ~= "idle" then
+        event = { what = "guard", from = st.state, to = "released",
+                  why = "inverted" }
+      end
+      goTo(st, "idle", "inverted", now)
+      st.plan = nil
+      return { release = true }, event
+    end
+
+    if tilt >= lean and not NEAR_GROUND[st.state] then
+      local event = nil
+      if st.guard ~= "attitude" then
+        event = { what = "guard", from = st.state, to = "levelling",
+                  why = "tilt" }
+      end
+      st.guard = "attitude"
+
+      -- Hold height, stop going anywhere, and ask any trim control to level.
+      -- The plan survives: a ship that leaned over in a gust and came back
+      -- should carry on, not abandon the flight.
+      return {
+        alt     = st.alt or fix.alt,
+        speed   = 0,
+        heading = holding(st, fix),
+        level   = true,
+        limits  = limits,
+      }, event
+    end
+  end
+
+  -- A ship spinning fast is out of control whatever its current angle: it is
+  -- simply between two attitudes. Only measurable with CC: Sable.
+  if spin and spin >= (tonumber(limits.spin) or config.spinLimit) then
+    st.guard = "attitude"
+    local event = nil
+    if st.state ~= "idle" then
+      event = { what = "guard", from = st.state, to = "released", why = "tumbling" }
+    end
+    goTo(st, "idle", "tumbling", now)
+    st.plan = nil
+    return { release = true }, event
+  end
+
+  -- 3. No vertical reference ---------------------------------------------------
 
   if not fix.levelled then
     local event = goTo(st, "idle", "noalt", now)
@@ -255,7 +373,7 @@ local function guards(st, fix, ctx, now)
     return { release = true }, event
   end
 
-  -- 2. Ground clearance --------------------------------------------------------
+  -- 4. Ground clearance --------------------------------------------------------
 
   -- Note the explicit nil test. A clearance of nil is "nothing answered" and a
   -- clearance of 0 is "on the ground", and `fix.clearance or floor` would turn
@@ -278,14 +396,77 @@ local function guards(st, fix, ctx, now)
     }, event
   end
 
-  -- 3. No usable fix -----------------------------------------------------------
+  -- 5. An obstacle ahead -------------------------------------------------------
+
+  -- The clearance guard above is a floor and nothing more. A ship at cruise
+  -- altitude flying at the side of a mountain has perfect clearance underneath
+  -- it the whole way in, and would have right up until it stopped.
+  --
+  -- Nil again means no reading, and here that is the common case twice over: no
+  -- forward sensor on the hull, or a sensor seeing nothing but sky. Neither is
+  -- an obstacle at zero blocks.
+  if fix.ahead ~= nil and not NEAR_GROUND[st.state] then
+    -- How far the ship travels before it can have stopped, near enough. Speed is
+    -- what makes an obstacle dangerous: the same rock is nothing at two blocks a
+    -- second and a problem at twelve.
+    local stopping = math.max((fix.speed or 0) * config.reaction, config.standoff)
+
+    if fix.ahead < stopping then
+      local event = nil
+      if st.guard ~= "obstacle" then
+        event = { what = "guard", from = st.state, to = "climbing",
+                  why = "obstacle" }
+      end
+      st.guard = "obstacle"
+
+      -- Adopt the height we are having to climb to, for the rest of the flight.
+      --
+      -- Without this the guard is a bounce loop and worse than useless. It
+      -- climbs; the forward sensor stops seeing the ridge the moment the ship
+      -- is above it; the guard releases; the altitude hold -- still set to the
+      -- plan's cruise altitude, which is *below* the ridge -- immediately flies
+      -- the ship back down into it. The downward guard never shows this because
+      -- its sensor keeps firing all the way across the top.
+      --
+      -- Monotonic within a flight, and reset by the next order. The plan's
+      -- altitude was simply too low for this route; the ship has just found that
+      -- out, and going back down to it having found out would be perverse.
+      if fix.alt and (st.alt == nil or fix.alt > st.alt) then
+        st.alt = fix.alt
+      end
+
+      -- Stop and climb, exactly as for terrain, and for the same reason: up is
+      -- the one direction that is reliably clear on a hull that can only see
+      -- forwards and down. The plan is untouched -- over the top and carry on.
+      --
+      -- **Know what this does not do.** A ship has no brakes. Zeroing the
+      -- forward demand removes the push; drag removes the speed, exponentially,
+      -- and a hull at cruise coasts a long way while it climbs. Against a ridge
+      -- it can get over, the climb wins and it clears. Against something
+      -- unclimbable -- a sheer cliff, a wall -- it will still drift into the
+      -- face, slowly, and this guard only buys height and time.
+      --
+      -- Turning away would be the real answer and is not attempted here: it
+      -- needs lateral momentum to reason about, the hull has no reverse thrust
+      -- to arrest it with, and a manoeuvre this file cannot test against the
+      -- flight model is a manoeuvre it has no business commanding.
+      return {
+        vs      = tonumber(limits.climb) or 4,
+        heading = st.goal and st.goal.heading,
+        speed   = 0,
+        limits  = limits,
+      }, event
+    end
+  end
+
+  -- 6. No usable fix -----------------------------------------------------------
 
   if NAVIGATING[st.state] and not fix.usable then
     st.guard = "nofix"
     return nil, goTo(st, "loiter", "nofix", now)
   end
 
-  -- 4. Bingo fuel --------------------------------------------------------------
+  -- 7. Bingo fuel --------------------------------------------------------------
 
   if not st.bingo and flight.airborne(st) and fix.burn and ctx.home then
     local home = (ctx.waypoints or {})[ctx.home]
@@ -553,6 +734,7 @@ function flight.describe(st, fix)
     at    = st.plan and st.plan.leg or 0,
     alt   = st.alt,
     bingo = st.bingo,
+    tilt  = fix and fix.tilt or nil,
     left  = st.plan and fix and nav.remaining(st.plan, fix) or nil,
   }
 end

@@ -131,6 +131,65 @@ config.clearance = 6
 config.fuelReserve = 1.5
 
 --------------------------------------------------------------------------------
+-- Attitude
+--------------------------------------------------------------------------------
+
+-- How far from level the ship may lean before it stops navigating and
+-- concentrates on being level again (degrees). Overridden per hull by
+-- limits.tilt.
+config.tiltLimit = 25
+
+-- ...and how far before the autopilot stops flying it altogether (degrees).
+--
+-- This is not "very tilted", it is the angle past which **our idea of up is no
+-- longer up**. Every control law here assumes the lift demand pushes the ship
+-- away from the ground; on a hull leaning past about seventy degrees it pushes
+-- it sideways, and on one past ninety it pushes it *down*. A ship on its back
+-- with the autopilot still calling for more lift is being flown into the ground
+-- by its own altitude hold, at full power, and no amount of good intent in the
+-- outer loop can help. So the hull is handed back and the physics is allowed to
+-- sort it out, which it usually does.
+config.tiltAbort = 70
+
+-- Angular velocity above which the ship is tumbling rather than manoeuvring
+-- (degrees per second). Only measurable with CC: Sable; without it the guard
+-- falls back to the tilt angle alone, which catches a ship that has gone over
+-- but not one that is spinning.
+config.spinLimit = 90
+
+--------------------------------------------------------------------------------
+-- Obstacles
+--------------------------------------------------------------------------------
+
+-- How many seconds of travel to keep clear of whatever is in front (seconds).
+--
+-- Deliberately generous, and it was two to begin with. **A ship has no brakes.**
+-- Zeroing the forward demand does not stop it; drag does, exponentially, and a
+-- hull at twelve blocks a second with a drag coefficient around a third coasts
+-- something like thirty-four blocks before it is really stopped. Triggering at
+-- twenty-four meant the guard fired, the ship climbed, and it still drifted into
+-- the cliff -- which is a guard that reports for duty and achieves nothing.
+--
+-- Four seconds is forty-eight blocks at cruise, which clears a ridge the ship
+-- can climb over. It is still not enough to stop dead in front of something
+-- unclimbable: see the note in lib/flight.lua's obstacle guard. A hull with real
+-- drag wants this higher.
+config.reaction = 4
+
+-- The least distance a forward obstacle may be at whatever the speed, so a ship
+-- creeping up to something still stops before it touches (blocks).
+config.standoff = 6
+
+--------------------------------------------------------------------------------
+-- The pilot's hands
+--------------------------------------------------------------------------------
+
+-- How long the joystick must be left alone before the autopilot takes the ship
+-- back (seconds). Short enough to catch a ship that has been let go of, long
+-- enough that pausing between inputs does not hand control back mid-manoeuvre.
+config.handback = 3
+
+--------------------------------------------------------------------------------
 -- Log
 --------------------------------------------------------------------------------
 
