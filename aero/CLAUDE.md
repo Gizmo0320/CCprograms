@@ -190,8 +190,42 @@ One API call per side however many share it.
 **A wire is the one control `release` turns off rather than hands back**, and the
 exception proves the rule. Everything else is an override on top of a control the
 ship already had; a redstone output has no owner underneath us, so there is
-nothing to hand it to. Which cuts both ways: a ship held up by a redstone-driven
-burner comes down when this program stops. Lift belongs on a bearing.
+nothing to hand it to and off is the safe value for a vent stuck open.
+
+Unless it is the lift. A [hot air burner](https://createaeronautics.miraheze.org/wiki/Hot_Air_Burner)
+and a [steam vent](https://createaeronautics.miraheze.org/wiki/Steam_Vent) are
+**analogue** — signal strength sets the target volume of hot air, linearly — so
+the signal *is* the buoyancy, and turning it off on the way out is a descent
+nobody asked for. `hold = true` marks such a wire: `release` leaves it driving
+and `hull.current` keeps its value, because clearing it would leave the burner
+lit in the world and recorded as off in the state file.
+
+Which leads to the other half. **CC does not persist a computer's redstone
+outputs** — they come back off after a chunk unload, exactly as in the redstone
+network, which is why that program restores them from disk too. `hull.saved` and
+`hull.restore` do the same here, and `pilot.lua` calls `restore` at boot
+immediately *after* `release`. That looks contradictory and is not: a peripheral
+override survives a reboot and must be dropped, a redstone output does not
+survive one and must be put back.
+
+A burner is also a far slower plant than a thruster — the envelope fills at a
+finite rate, so lift lags the command by seconds — and there are only sixteen
+levels to express it in. `apply` rounds a `signal` demand to one of them
+**before** the change test, or a settled hover asking for 0.500 then 0.503
+rewrites the wire every sweep. The thruster gain defaults will make a balloon
+oscillate; `fly_spec.lua` flies one with a softer set and asserts it neither
+drifts nor hunts between two redstone levels.
+
+### Tilt over redstone
+
+The gimbal sensor "outputs redstone signals based on which side is leaning
+downwards" with a per-axis sensitivity, so attitude off a bare block is four
+analogue reads to combine rather than a method call. `craft.tilt` names the four
+faces and the degrees a full signal means; opposite faces are **subtracted**, so
+a sensor leaking on both at once reads level rather than as a ship pitched hard
+in whichever direction was checked first. Only consulted when the
+`gimbal_sensor` peripheral did not answer — it reports real angles where this
+reports sixteen steps.
 
 `apply` also **slew-limits** throttle by `config.slew` per second, treating "not
 yet written" as zero. A step from nothing to everything on a lift bearing is a

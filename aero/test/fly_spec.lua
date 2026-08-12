@@ -274,6 +274,133 @@ do
 end
 
 --------------------------------------------------------------------------------
+section("a balloon")
+--------------------------------------------------------------------------------
+
+-- A hot air burner is a completely different plant from a thruster. The signal
+-- sets a **target volume** of hot air and the envelope fills towards it at a
+-- finite rate, so the lift lags the command by seconds in both directions -- and
+-- the gains that hold a jet steady will make a balloon oscillate up and down for
+-- as long as you leave it.
+--
+-- This is also the configuration where losing the wire matters: the signal *is*
+-- the lift, so a chunk reload that dropped the output would be a descent.
+do
+  local BALLOON = {
+    name = "Nimbus",
+    controls = {
+      -- `hold` because this is what is keeping the ship up. See lib/hull's
+      -- release.
+      burner = { kind = "wire", side = "top", mode = "analog", hold = true },
+      main   = { kind = "bearing", peripheral = "main0", group = "all",
+                 pivot = { min = -30, max = 30 } },
+    },
+    instruments = { nav = "nav0", alt = "alt0", vel = "vel0", ground = "opt0",
+                    dock = "dock0", gimbal = false, stick = false, link = false },
+    limits = { cruise = 8, climb = 2, descend = 2, clearance = 8 },
+    -- Softer and slower than the thruster defaults, because the plant is. The
+    -- integral does most of the work here: there is a volume that hovers and the
+    -- loop has to find it and sit on it.
+    gains = { hover = 0.5, altP = 0.2, vsP = 0.05, vsI = 0.04, vsD = 0.04,
+              vsIMax = 0.5 },
+    mix = {
+      { demand = "lift",    control = "burner", as = "signal" },
+      { demand = "forward", control = "main",   as = "throttle" },
+      { demand = "yaw",     control = "main",   as = "pivot", scale = 30 },
+    },
+  }
+
+  local function balloonRig(opts)
+    opts = opts or {}
+    opts.lift, opts.main = nil, "main0"
+    opts.y = opts.y or 64
+
+    local world = mock.new(opts)
+    world.bearing("main0", { count = 2, fuel = 100000, capacity = 100000,
+                             burn = 3000 })
+    world.navTable("nav0")
+    world.altimeter("alt0")
+    world.velocimeter("vel0")
+    world.optical("opt0", { range = 60 })
+    world.dockPort("dock0")
+    world.balloon{ side = "top", volume = 500, fill = 40 }
+    _G.peripheral = world.api
+    _G.redstone = world.redstone.api
+
+    hull.define(BALLOON)
+    hull.claim()
+
+    return { world = world, fix = instruments.blank(), ap = autopilot.new(hull.gains),
+             fl = flight.new(), t = 0, log = {} }
+  end
+
+  local r = balloonRig{}
+  local ctx = { waypoints = {}, limits = BALLOON.limits }
+  r.fl.state = "loiter"
+  r.fl.alt = 110
+
+  run(r, 200, ctx)
+
+  check(math.abs(r.world.ship.y - 110) <= 4,
+        "a balloon climbs to the altitude it was given", r.world.ship.y)
+  check(math.abs(r.world.ship.vy) < 0.6, "and settles there", r.world.ship.vy)
+
+  -- The signal it settled on is what the sixteen redstone levels can actually
+  -- express. If the loop cannot hold still inside one level it will hunt between
+  -- two of them forever, which on a balloon is a very visible bob.
+  local settled = r.world.redstone.output.top
+  local lo, hi = 15, 0
+  for _ = 1, 150 do
+    sweep(r, ctx)
+    local level = r.world.redstone.output.top
+    if level < lo then lo = level end
+    if level > hi then hi = level end
+  end
+  check(hi - lo <= 2, "without hunting between redstone levels",
+        ("%d-%d"):format(lo, hi))
+  check(math.abs(r.world.ship.y - 110) <= 5, "or drifting off altitude",
+        r.world.ship.y)
+
+  -- Down to a new altitude. The envelope has to vent, which it does no faster
+  -- than it filled.
+  r.fl.alt = 80
+  autopilot.reset(r.ap)
+  run(r, 200, ctx)
+  check(math.abs(r.world.ship.y - 80) <= 5,
+        "and comes down to a new one", r.world.ship.y)
+
+  -- The whole reason `hold` exists.
+  hull.release()
+  check(r.world.redstone.output.top > 0,
+        "release leaves the burner lit, because it is the lift",
+        r.world.redstone.output.top)
+
+  -- ...and the whole reason the signal is saved. CC does not persist redstone
+  -- outputs, so a chunk reload starts from nothing unless something puts it
+  -- back.
+  local saved = hull.saved()
+  local r2 = balloonRig{ y = 110 }
+  check(r2.world.redstone.output.top == nil, "a reboot starts with the burner out")
+
+  hull.restore(saved)
+  check(r2.world.redstone.output.top > 0,
+        "and restore relights it before the first sweep",
+        r2.world.redstone.output.top)
+
+  -- The ship should hold roughly where it was rather than sinking while the
+  -- autopilot works out what it is doing.
+  local ctx2 = { waypoints = {}, limits = BALLOON.limits }
+  r2.fl.state = "loiter"
+  r2.fl.alt = 110
+  r2.world.balloons[1].volume = 250      -- it was flying, so it is already full
+  run(r2, 30, ctx2)
+  check(r2.world.ship.y > 100,
+        "so a reloaded chunk is not a descent", r2.world.ship.y)
+
+  _G.redstone = nil
+end
+
+--------------------------------------------------------------------------------
 section("the terrain guard")
 --------------------------------------------------------------------------------
 

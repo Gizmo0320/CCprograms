@@ -191,6 +191,11 @@ local function save()
   state.data.dockTo = pilot.fl.dockTo
   state.data.waypoints = pilot.waypoints
   state.data.home  = pilot.home
+
+  -- The redstone signals we are holding. CC does not persist a computer's
+  -- outputs, so on a balloon this is the difference between a chunk reloading
+  -- and a chunk reloading with the burner out.
+  state.data.wires = hull.saved()
   state.mark()
 end
 
@@ -448,6 +453,14 @@ restore()
 -- controls are set to.
 hull.release()
 pilot.lastState = "released"
+
+-- ...and then put the wires back, which is the opposite thing and is not a
+-- contradiction. A peripheral override survives a reboot and has to be dropped;
+-- a redstone output does *not* survive one and has to be restored. On a ship
+-- held up by a hot air burner, the second is what stops a chunk reload being a
+-- descent: the balloon's target volume is a redstone signal, and a signal that
+-- came back at zero is a balloon told to empty.
+hull.restore(state.data.wires)
 
 if not net.open() then
   print("No wireless modem. Flying blind and alone.")

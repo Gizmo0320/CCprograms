@@ -1104,6 +1104,114 @@ do
   check(#described.signals == 3, "and they ride in the hull description",
         #described.signals)
 
+  -- Redstone has sixteen levels and nothing between them, so a demand is rounded
+  -- to one of them before the change test. Without that, a settled hover asking
+  -- for 0.500 and then 0.503 rewrites the wire on every sweep for no reason.
+  w = rig(craft{
+    controls = { lever = { kind = "wire", side = "back", mode = "analog" } },
+    mix = {},
+  })
+  hull.apply({ lever = { signal = 0.5 } }, 10)
+  local first = #hull.apply({ lever = { signal = 0.503 } }, 10)
+  check(first == 0, "a demand inside one redstone level is not rewritten", first)
+  check(#hull.apply({ lever = { signal = 0.6 } }, 10) == 1,
+        "and one that crosses a level is")
+
+  -- A burner or a vent is holding the ship *up*, so `hold` leaves it driving on
+  -- the way out. Turning it off would be a controlled descent nobody asked for,
+  -- from whatever altitude the ship happened to be at.
+  w = rig(craft{
+    controls = {
+      burner = { kind = "wire", side = "top", mode = "analog", hold = true },
+      vent   = { kind = "wire", side = "left" },
+    },
+    mix = {},
+  })
+  hull.apply({ burner = { signal = 1 }, vent = { signal = 1 } }, 10)
+  check(w.redstone.output.top == 15 and w.redstone.output.left == true,
+        "both wires are driven")
+
+  hull.release()
+  check(w.redstone.output.top == 15,
+        "release leaves a `hold` wire burning", w.redstone.output.top)
+  check(w.redstone.output.left == false,
+        "and turns an ordinary one off")
+
+  -- CC does not persist a computer's redstone outputs, so on a balloon a chunk
+  -- reload is a burner going out. This is what makes walking away survivable.
+  local saved = hull.saved()
+  check(saved.burner ~= nil, "the wires are in the state file", saved.burner)
+
+  w = rig(craft{
+    controls = { burner = { kind = "wire", side = "top", mode = "analog",
+                            hold = true } },
+    mix = {},
+  })
+  check(w.redstone.output.top == nil, "a fresh boot drives nothing")
+  hull.restore({ burner = 1 })
+  check(w.redstone.output.top == 15,
+        "and restore puts the burner back before the first sweep",
+        w.redstone.output.top)
+
+  -- The gimbal sensor over plain redstone: it powers the face of whichever side
+  -- is leaning down, in proportion, with the sensitivity set on the block.
+  w = mock.new{}
+  w.navTable("nav0")
+  w.altimeter("alt0")
+  _G.peripheral = w.api
+  _G.redstone = w.redstone.api
+  w.tiltWire{ front = "front", back = "back", left = "left", right = "right",
+              degrees = 30 }
+
+  local okTilt, tiltWhy = hull.define({
+    controls = {},
+    instruments = { nav = "nav0", alt = "alt0", vel = false, gimbal = false,
+                    ground = false, dock = false, stick = false, link = false },
+    tilt = { front = "front", back = "back", left = "left", right = "right",
+             degrees = 30 },
+    mix = {},
+  })
+  check(okTilt, "a redstone tilt block loads clean", tiltWhy and tiltWhy[1])
+
+  w.ship.pitch, w.ship.roll = 15, 0
+  w.updateTilt()
+  local tilted = hull.read(1)
+  check(near(tilted.pitch, 15, 1.1), "nose down reads as positive pitch",
+        tilted.pitch)
+  check(near(tilted.roll, 0, 0.001), "with no roll", tilted.roll)
+
+  w.ship.pitch, w.ship.roll = -30, 30
+  w.updateTilt()
+  tilted = hull.read(2)
+  check(near(tilted.pitch, -30, 1.1), "tail down reads as negative", tilted.pitch)
+  check(near(tilted.roll, 30, 1.1), "and the other axis is independent",
+        tilted.roll)
+  check(tilted.tiltSource == "redstone", "and it says where the reading came from")
+
+  -- Only sixteen steps of whatever the panel is set to, so a hull with the real
+  -- peripheral should not be given the coarse reading instead.
+  w.gimbal("gim0")
+  hull.define({
+    controls = {},
+    instruments = { nav = "nav0", alt = "alt0", gimbal = "gim0", vel = false,
+                    ground = false, dock = false, stick = false, link = false },
+    tilt = { front = "front", back = "back", degrees = 30 },
+    mix = {},
+  })
+  w.ship.pitch, w.ship.roll = 7.25, -3.5
+  local exact = hull.read(3)
+  check(exact.tiltSource == "sensor", "the peripheral wins when there is one",
+        exact.tiltSource)
+  check(near(exact.pitch, 7.25), "and its angles are exact rather than rounded",
+        exact.pitch)
+
+  local _, tiltBad, tiltWhy2 = false, nil, nil
+  tiltBad, tiltWhy2 = hull.define({
+    controls = {}, instruments = { nav = "nav0", alt = "alt0" },
+    tilt = { front = "sideways" }, mix = {},
+  })
+  check(not tiltBad, "a tilt face that is not a side is refused", tiltWhy2 and tiltWhy2[1])
+
   _G.redstone = nil
   _G.peripheral = realPeripheral
 end

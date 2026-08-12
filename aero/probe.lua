@@ -158,8 +158,15 @@ local relays = found.redstone_relay or {}
 controls[#controls + 1] = "    -- Redstone. `side` is one of top bottom left right"
 controls[#controls + 1] = "    -- front back, and `mode` is digital, analog or bundled."
 controls[#controls + 1] = "    -- With no `peripheral` these drive this computer's own sides."
-controls[#controls + 1] = '    -- burner = { kind = "wire", side = "top" },'
-controls[#controls + 1] = '    -- lever  = { kind = "wire", side = "back", mode = "analog" },'
+controls[#controls + 1] = "    --"
+controls[#controls + 1] = "    -- A hot air burner or a steam vent is analogue: the signal"
+controls[#controls + 1] = "    -- strength sets the target volume of hot air, so it is the"
+controls[#controls + 1] = "    -- lift. `hold = true` leaves it burning when the program"
+controls[#controls + 1] = "    -- stops, which on a balloon is the difference between"
+controls[#controls + 1] = "    -- landing and falling."
+controls[#controls + 1] =
+  '    -- burner = { kind = "wire", side = "top", mode = "analog", hold = true },'
+controls[#controls + 1] = '    -- vent   = { kind = "wire", side = "left" },'
 
 for i, side in ipairs(relays) do
   controls[#controls + 1] =
@@ -250,6 +257,14 @@ craft[#craft + 1] = "  signals = {"
 craft[#craft + 1] = '    -- launch = { side = "front" },'
 craft[#craft + 1] = '    -- cargo  = { side = "right", mode = "analog" },'
 craft[#craft + 1] = "  },"
+craft[#craft + 1] = ""
+craft[#craft + 1] = "  -- A gimbal sensor wired as redstone rather than read as a"
+craft[#craft + 1] = "  -- peripheral. It powers the face of whichever side is leaning"
+craft[#craft + 1] = "  -- down. `degrees` is what a signal of 15 means and has to match"
+craft[#craft + 1] = "  -- the sensitivity panels on the block -- nothing here can read"
+craft[#craft + 1] = "  -- them. Not needed if you have the gimbal_sensor peripheral."
+craft[#craft + 1] = "  -- tilt = { front = \"front\", back = \"back\","
+craft[#craft + 1] = "  --          left = \"left\", right = \"right\", degrees = 30 },"
 craft[#craft + 1] = ""
 craft[#craft + 1] = "  -- cruise/climb/descend are blocks per second."
 craft[#craft + 1] = "  -- clearance is how close to the ground the terrain guard tolerates."

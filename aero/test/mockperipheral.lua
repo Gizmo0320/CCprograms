@@ -462,6 +462,94 @@ function mock.new(opts)
   --- The flight computer's own six sides, for `_G.redstone`.
   world.redstone = bus()
 
+  --------------------------------------------------------------------------------
+  -- Balloons
+  --------------------------------------------------------------------------------
+
+  -- A hot air burner or a steam vent, as the wiki describes them: powered by
+  -- redstone, and "the maximum volume scales linearly with received redstone
+  -- signal strength". So the signal sets a **target volume** and the balloon
+  -- fills towards it gradually -- which makes this a far slower and more
+  -- integrating plant than a thruster, and the reason it is worth simulating
+  -- separately rather than pretending a burner is a bearing with a wire on it.
+  --
+  --   world.balloon{ side = "top", volume = 500, fill = 60 }
+  --
+  -- Lift is proportional to the volume actually in the envelope, not to the
+  -- signal, so a ship told to climb keeps climbing for a while after the signal
+  -- comes back down. An autopilot tuned for a thruster will oscillate on this,
+  -- which is exactly what the test suite is for.
+  world.balloons = {}
+
+  function world.balloon(opts2)
+    opts2 = opts2 or {}
+    local b = {
+      relay  = opts2.peripheral,        -- nil for the computer's own bus
+      side   = opts2.side or "top",
+      max    = opts2.volume or 500,     -- m3 at signal 15, the panel setting
+      fill   = opts2.fill or 60,        -- m3 per second it can move
+      volume = opts2.start or 0,
+      -- How much lift a cubic metre is worth, as an acceleration. Chosen by
+      -- default so that half the maximum volume exactly cancels gravity, which
+      -- makes "hover at signal 8" true and gives the gains something sane to be
+      -- tuned against.
+      per    = opts2.per or (world.gravity / ((opts2.volume or 500) / 2)),
+    }
+    world.balloons[#world.balloons + 1] = b
+    return b
+  end
+
+  --- A gimbal sensor wired as redstone rather than read as a peripheral.
+  --
+  -- The block "outputs redstone signals based on which side is leaning
+  -- downwards", with an adjustable sensitivity per axis. So it powers the face
+  -- of whichever side is low, in proportion, and the two opposite faces are
+  -- never both powered.
+  --
+  --   world.tiltWire{ front = "front", back = "back", degrees = 30 }
+  --
+  -- Then set world.ship.pitch and the inputs follow.
+  function world.tiltWire(opts2)
+    world.tilt = opts2 or {}
+    world.tilt.degrees = world.tilt.degrees or 30
+    world.updateTilt()
+    return world.tilt
+  end
+
+  function world.updateTilt()
+    local t = world.tilt
+    if not t then return end
+
+    local target = t.peripheral and world.devices[t.peripheral]
+    local input = target and target.input or world.redstone.input
+
+    local function put(side, degrees)
+      if not side then return end
+      local level = math.floor(math.abs(degrees) / t.degrees * 15 + 0.5)
+      input[side] = math.max(0, math.min(15, level))
+    end
+
+    -- Positive pitch is nose down, positive roll is right side down -- the same
+    -- convention lib/hull reads them back with. Only the low side is powered.
+    put(t.front, world.ship.pitch > 0 and world.ship.pitch or 0)
+    put(t.back,  world.ship.pitch < 0 and world.ship.pitch or 0)
+    put(t.right, world.ship.roll  > 0 and world.ship.roll  or 0)
+    put(t.left,  world.ship.roll  < 0 and world.ship.roll  or 0)
+  end
+
+  --- The signal a balloon is seeing, 0-15.
+  local function balloonSignal(b)
+    local out
+    if b.relay then
+      local d = world.devices[b.relay]
+      out = d and d.output[b.side]
+    else
+      out = world.redstone.output[b.side]
+    end
+    if type(out) == "boolean" then return out and 15 or 0 end
+    return math.floor(tonumber(out) or 0)
+  end
+
   --- A redstone relay: the identical API, on the end of a wired modem.
   --
   -- Identical is the point. lib/hull drives a relay and its own bus through one
@@ -576,6 +664,22 @@ function mock.new(opts)
 
     -- Vertical. Hovers at half lift throttle, by construction of the defaults.
     local up = throttleOf(world.lift) * world.liftGain
+
+    -- Balloons add to it. The signal sets a target volume and the envelope
+    -- fills towards it at a finite rate, so the lift lags the command by
+    -- several seconds in both directions -- which is the whole character of the
+    -- plant and the thing an autopilot has to be tuned for.
+    for _, b in ipairs(world.balloons) do
+      local target = balloonSignal(b) / 15 * b.max
+      local step = b.fill * dt
+      if target > b.volume then
+        b.volume = math.min(target, b.volume + step)
+      else
+        b.volume = math.max(target, b.volume - step)
+      end
+      up = up + b.volume * b.per
+    end
+
     s.vy = s.vy + (up - world.gravity) * dt
     s.vy = s.vy - s.vy * world.dragV * dt
     s.y  = s.y + s.vy * dt
@@ -606,6 +710,8 @@ function mock.new(opts)
       if s.vy < 0 then s.vy = 0 end
       s.speed = s.speed * 0.5
     end
+
+    world.updateTilt()
 
     -- Fuel. Burned in proportion to throttle so a long flight actually runs the
     -- tanks down and the bingo guard has something real to fire on.

@@ -46,6 +46,7 @@ hull.problems    = {}    -- what was wrong with the last define(), for the UI
 hull.faults      = {}    -- [key] = reason -- what has gone wrong since
 hull.current     = {}    -- [control] = { field = value } we are actually driving
 hull.wires       = {}    -- ["<relay|*>:<face>"] = { control, ... } sharing a side
+hull.tilt        = nil   -- the gimbal sensor read over redstone, if wired that way
 hull.signals     = {}    -- [name] = redstone inputs read this sweep
 
 -- Fuel and thrust are read on their own slower clock, see `read`.
@@ -272,6 +273,7 @@ function hull.reset()
   hull.limits, hull.gains, hull.mix = {}, {}, {}
   hull.problems, hull.faults, hull.current = {}, {}, {}
   hull.wires, hull.signals, hull.inputs = {}, {}, {}
+  hull.tilt = nil
   hull.fuel, hull.fuelAt = {}, -math.huge
 end
 
@@ -353,6 +355,9 @@ function hull.define(craft)
         mode    = c.mode or "digital",
         colour  = c.colour or c.color,
         invert  = c.invert and true or false,
+        -- `hold` marks a wire whose signal is holding the ship up: a hot air
+        -- burner or a steam vent. See `release`.
+        hold    = c.hold and true or false,
         label   = c.label or name,
       }
 
@@ -456,6 +461,60 @@ function hull.define(craft)
         colour = s.colour or s.color,
         invert = s.invert and true or false,
         label  = s.label or name,
+      }
+    end
+  end
+
+  -- Tilt over redstone ---------------------------------------------------------
+
+  -- The gimbal sensor "outputs redstone signals based on which side is leaning
+  -- downwards", one adjustable sensitivity per axis. So attitude off a bare
+  -- sensor is four analogue reads to be combined, not a method call -- and on a
+  -- hull without the Gadgets & Gizmos peripheral it is the only way to know
+  -- which way up the ship is.
+  --
+  --   tilt = { front = "front", back = "back",
+  --            left = "left", right = "right", degrees = 30 }
+  --
+  -- Each names the input side that powers when *that* side of the ship leans
+  -- down. `degrees` is what a signal of 15 means and must match the sensitivity
+  -- panels on the block, because nothing here can read them.
+  local tilt = craft.tilt
+  if type(tilt) == "table" then
+    local why = nil
+
+    if tilt.peripheral and not peripheral.isPresent(tilt.peripheral) then
+      why = "tilt: " .. tostring(tilt.peripheral) .. " is not attached"
+    end
+
+    local faces = {}
+    for _, axis in ipairs({ "front", "back", "left", "right" }) do
+      local side = tilt[axis]
+      if side ~= nil then
+        if not SIDES[side] then
+          why = why or ("tilt." .. axis .. ": '" .. tostring(side) .. "' is not a side")
+        else
+          faces[axis] = side
+        end
+      end
+    end
+
+    -- All four may be wired, or only the pair for one axis. None at all is a
+    -- `tilt` block that says nothing, which is more likely a half-finished edit
+    -- than an intention.
+    if not why and next(faces) == nil then
+      why = "tilt: no sides named"
+    end
+
+    if why then
+      hull.problems[#hull.problems + 1] = why
+    else
+      hull.tilt = {
+        side    = tilt.peripheral,
+        faces   = faces,
+        degrees = tonumber(tilt.degrees) or 30,
+        invertPitch = tilt.invertPitch and true or false,
+        invertRoll  = tilt.invertRoll  and true or false,
       }
     end
   end
@@ -636,24 +695,38 @@ function hull.release()
       -- and unlike a throttle a grip is not holding the ship up.
 
     elseif c.kind == "wire" then
-      -- The one kind that is genuinely **zeroed** rather than handed back, and
-      -- the exception proves the rule. Everything else here is an override on
-      -- top of a control the ship already had, so releasing means giving it up.
-      -- A redstone output has no owner underneath us: the computer *is* what
-      -- holds it, exactly as in the redstone network, so there is nothing to
-      -- hand it back to and off is the only safe value.
+      -- A wire has no owner underneath us. The computer *is* what holds the
+      -- signal, exactly as in the redstone network, so there is nothing to hand
+      -- it back to and the only two choices are off and left where it is.
       --
-      -- Which cuts both ways, and is worth knowing before you wire a burner
-      -- through one: a ship kept aloft by a redstone-driven burner comes down
-      -- when this program stops. Drive lift through a bearing.
-      hull.current[name] = { signal = 0 }
-      emitFace(c)
+      -- Off is the default, because a vent stuck open or a gearshift stuck over
+      -- is worse than one that stopped. But a hot air burner or a steam vent is
+      -- holding the ship *up* -- signal strength sets the target volume of hot
+      -- air in the balloon, and zero means the balloon empties -- so a `hold`
+      -- wire is deliberately left driving. Turning the burner off on the way out
+      -- of the program would be a controlled descent nobody asked for, from
+      -- whatever altitude the ship happened to be at.
+      if not c.hold then
+        hull.current[name] = { signal = 0 }
+        emitFace(c)
+      end
     end
 
     released = released + 1
   end
 
-  hull.current = {}
+  -- Everything we were driving is forgotten, **except** the wires we
+  -- deliberately left driving. Clearing those too would leave the burner lit in
+  -- the world and recorded as off in the state file -- so the next boot would
+  -- restore a zero over a balloon that was perfectly happy, which is the exact
+  -- descent `hold` exists to prevent, only delayed until the chunk reloads.
+  local kept = {}
+  for _, name in ipairs(hull.order) do
+    local c = hull.controls[name]
+    if c.kind == "wire" and c.hold then kept[name] = hull.current[name] end
+  end
+  hull.current = kept
+
   return released
 end
 
@@ -802,6 +875,42 @@ function hull.read(now)
 
   if inst.gimbal then
     raw.pitch, raw.roll = angles(call("gimbal", inst.gimbal.side, "getAngles"))
+    raw.tiltSource = "sensor"
+  end
+
+  -- A gimbal sensor read over plain redstone: four analogue faces, each powered
+  -- in proportion to how far that side of the ship is leaning down.
+  --
+  -- Only consulted when the peripheral did not answer. The peripheral reports
+  -- real angles; this reports sixteen steps of whatever the sensitivity panel is
+  -- set to, and preferring the coarse reading over the exact one would be an odd
+  -- thing to do to a hull that has both.
+  if hull.tilt and (raw.pitch == nil or raw.roll == nil) then
+    local t = hull.tilt
+    local per = t.degrees / 15
+
+    local function lean(axis)
+      local side = t.faces[axis]
+      if not side then return nil end
+      return tonumber((wireCall("tilt", t.side, "getAnalogInput", side)))
+    end
+
+    local front, back = lean("front"), lean("back")
+    local left, right = lean("left"), lean("right")
+
+    -- Opposite faces are subtracted rather than taken one at a time, so a sensor
+    -- leaking a signal on both faces at once reads as level rather than as a
+    -- ship pitched hard in whichever direction happened to be checked first.
+    if front or back then
+      local pitch = ((front or 0) - (back or 0)) * per
+      raw.pitch = t.invertPitch and -pitch or pitch
+    end
+    if left or right then
+      local roll = ((right or 0) - (left or 0)) * per
+      raw.roll = t.invertRoll and -roll or roll
+    end
+
+    raw.tiltSource = "redstone"
   end
 
   if inst.ground then
@@ -1021,6 +1130,19 @@ function hull.apply(demands, dt)
             value = slew(have[field], value, dt)
           end
 
+          -- Redstone has sixteen levels and nothing in between, so the demand is
+          -- rounded to one of them *before* the change test rather than after.
+          -- A PID asking for 0.500 and then 0.503 is asking for signal 8 twice,
+          -- and without this every sweep of a settled hover counts as a change
+          -- and rewrites the wire.
+          if field == "signal" then
+            if c.mode == "analog" then
+              value = math.floor(value * 15 + 0.5) / 15
+            else
+              value = (value > 0.5) and 1 or 0
+            end
+          end
+
           if have[field] ~= value then
             applied[#applied + 1] =
               { control = name, field = field, from = have[field], to = value }
@@ -1092,6 +1214,68 @@ function hull.apply(demands, dt)
   end
 
   return applied
+end
+
+--------------------------------------------------------------------------------
+-- Surviving a reboot
+--------------------------------------------------------------------------------
+
+--- Just the wire signals, for the state file.
+--
+-- Only wires. Every other control here is an override on a peripheral that keeps
+-- its own state, and restoring a throttle from disk onto a bearing that has been
+-- sitting idle would be the pilot's first sweep fighting a number it did not
+-- choose. A redstone output is the one thing the *computer* was holding.
+function hull.saved()
+  local out = {}
+  for _, name in ipairs(hull.order) do
+    local c = hull.controls[name]
+    if c.kind == "wire" then
+      local held = hull.current[name]
+      out[name] = (held and held.signal) or 0
+    end
+  end
+  return out
+end
+
+--- Put the wires back the way they were before the reboot.
+--
+-- CC does **not** persist a computer's redstone outputs. They come back off
+-- after a chunk unload or a server restart, exactly as they do in the redstone
+-- network, which is why that program restores them from disk too.
+--
+-- On a balloon that is not a cosmetic problem. The burner goes out, the balloon
+-- stops being told to hold its volume, and the ship sinks -- because a chunk
+-- reloaded, which is a thing that happens every time you walk away. So this runs
+-- at boot, before the listener starts, and the first telemetry frame is already
+-- true.
+function hull.restore(saved)
+  if type(saved) ~= "table" then return 0 end
+
+  local n, faces = 0, {}
+  for name, signal in pairs(saved) do
+    local c = hull.controls[name]
+    if c and c.kind == "wire" then
+      hull.current[name] = hull.current[name] or {}
+      hull.current[name].signal = clamp(tonumber(signal) or 0, 0, 1)
+      faces[c] = true
+      n = n + 1
+    end
+  end
+
+  -- One emit per control is one per *face* in effect, because emitFace rebuilds
+  -- the whole face anyway -- but a bundled cable with four colours restored
+  -- would otherwise be written four times before it was right once.
+  local done = {}
+  for c in pairs(faces) do
+    local key = (c.side or "*") .. ":" .. tostring(c.face)
+    if not done[key] then
+      done[key] = true
+      emitFace(c)
+    end
+  end
+
+  return n
 end
 
 --------------------------------------------------------------------------------

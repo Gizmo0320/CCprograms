@@ -167,13 +167,89 @@ one number shared by up to sixteen controls and setting one colour without
 knowing the other fifteen turns them all off. Anything else sharing a side is
 refused at load with a reason.
 
-**A wire is the one control that is turned off rather than handed back.**
+**A wire is turned off rather than handed back when the program stops.**
 Everything else here is an override on top of a control the ship already had, so
 releasing means giving it up. A redstone output has no owner underneath us — the
-computer *is* what holds it — so there is nothing to hand it back to and off is
-the only safe value. Which cuts both ways, and is worth knowing before you wire a
-burner through one: **a ship kept aloft by a redstone-driven burner comes down
-when the program stops.** Drive lift through a bearing.
+computer *is* what holds it — so there is nothing to hand it back to, and off is
+the safe value for a vent or a gearshift stuck over.
+
+It is emphatically **not** the safe value for something holding the ship up.
+See below.
+
+## Balloons: burners and steam vents
+
+A [hot air burner](https://createaeronautics.miraheze.org/wiki/Hot_Air_Burner)
+and a [steam vent](https://createaeronautics.miraheze.org/wiki/Steam_Vent) both
+generate lift by filling a hot air envelope, and both are **analogue**: the
+signal strength sets the target volume, linearly, up to whatever the panel on the
+block is configured to. Signal 15 is the full volume; signal 0 empties it.
+
+```lua
+controls = {
+  burner = { kind = "wire", side = "top", mode = "analog", hold = true },
+}
+
+mix = {
+  { demand = "lift", control = "burner", as = "signal" },
+}
+```
+
+Three things follow, and all three matter.
+
+**`hold = true`, always, on anything that is lift.** It tells `release` to leave
+the wire driving when the program stops. Without it, quitting the pilot turns the
+burner off at whatever altitude you happened to be at. `hold` is also what keeps
+the signal in the state file, so the next boot puts it back.
+
+**CC does not persist redstone outputs.** They come back off after a chunk
+unload or a server restart. The pilot saves every wire signal and restores it at
+boot, before the listener starts — which is the only reason walking away from a
+moored balloon is survivable. This is handled for you; it is written down because
+it is not obvious and it is the difference between a ship that is still there
+when you come back and one that is not.
+
+**It is a much slower plant than a thruster.** The envelope fills at a finite
+rate, so the lift lags the command by seconds in both directions, and there are
+only sixteen signal levels to express it in. The thruster defaults will make a
+balloon bob up and down for as long as you leave it. Start softer and let the
+integral do the work — this is the gain set the test suite flies a balloon with:
+
+```lua
+gains = { hover = 0.5, altP = 0.2, vsP = 0.05, vsI = 0.04, vsD = 0.04,
+          vsIMax = 0.5 },
+limits = { cruise = 8, climb = 2, descend = 2, clearance = 8 },
+```
+
+Multiple burners or vents can fill one balloon and their volumes combine, so give
+each its own `wire` control and its own `lift` mix term — the terms add.
+
+## Tilt
+
+The [gimbal sensor](https://createaeronautics.miraheze.org/wiki/Gimbal_sensor)
+"outputs redstone signals based on which side is leaning downwards", with a
+separate sensitivity for each axis. If you have the Gadgets & Gizmos peripheral
+it is read directly and you need nothing here. If you are reading the block over
+redstone, name the four faces:
+
+```lua
+tilt = {
+  front = "front",   -- the input side that powers when the nose leans down
+  back  = "back",
+  left  = "left",
+  right = "right",
+  degrees = 30,      -- what a signal of 15 means; match the sensitivity panels
+  -- peripheral = "redstone_relay_0",   -- optional
+},
+```
+
+`degrees` has to match what is set on the block, because nothing here can read
+it. Pitch comes out positive nose-down and roll positive right-side-down; add
+`invertPitch = true` or `invertRoll = true` if your sensor is mounted the other
+way round. Either pair may be omitted if you only wired one axis.
+
+Tilt shows on the pilot's screen and rides in the telemetry frame. The peripheral
+is preferred when both are present: it reports real angles, where redstone gives
+sixteen steps of whatever the panel says.
 
 ### Signals coming in
 
@@ -322,7 +398,7 @@ Results are written to `/test-summary.txt` and `/test-*-results.txt` on the
 emulated computer rather than stdout, because headless mode redraws the entire
 terminal on every update.
 
-391 assertions. `spec.lua` covers each module on its own — the heading
+417 assertions. `spec.lua` covers each module on its own — the heading
 arithmetic and the wrap, plans and legs, sensor fusion and the ageing of a
 dead-reckoned fix, the PID loops and the integral clamp, every flight state and
 all four guards, the hull abstraction over a mock of the real peripheral API, the
