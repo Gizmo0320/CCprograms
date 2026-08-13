@@ -13,11 +13,11 @@ its role says:
 | `pilot.lua` | a computer riding the contraption | Flies it. Owns the plan and every guard |
 | `server.lua` | an advanced computer at base | Fleet roster, waypoints, the log, a monitor dashboard and a map |
 | `remote.lua` | an advanced pocket computer | Fleet, fly, nav, log |
-| `beacon.lua` | a computer standing where you want a waypoint | Registers itself, and measures what is above it |
+| `beacon.lua` | a computer standing where you want a waypoint | Announces itself as one. No sensors needed |
 
 Plus `probe.lua`, which looks at what is bolted to the hull and writes a
 `/craft.cfg` to start from, and `beacon.lua`, a computer you place in the world
-to *be* a waypoint.
+and give coordinates to, so that it *is* a waypoint.
 
 **Every ship is autonomous.** The tower and the pocket set goals; they never fly
 anything. Switch the tower off, break it, let its chunk unload — the ships carry
@@ -39,8 +39,8 @@ allowed to depend on the link.
   navigate. An **altitude sensor** and an **optical sensor** pointing down are
   both strongly wanted; see Guards.
 - **Beacons are optional.** A waypoint tapped in from the pocket works; a beacon
-  is a computer that stands there being one, and measures what is above it. See
-  *Waypoint computers*.
+  is a computer that stands there being one, so it does not need anybody present
+  and survives restarts. It needs no sensors. See *Waypoint computers*.
 - **[CC: Sable](https://techtastic.github.io/CC-Sable/)** is optional and worth
   having. It exposes the physics object itself — real velocity, real
   orientation, angular velocity, mass — which is strictly better than any sensor
@@ -134,9 +134,8 @@ and the tower remembers; the next plan over the same ground will tell you what i
 needs before you take off.
 
 **9. Optional, later.** Put a computer at the far pad, install it with
-`--role=beacon`, and give it an optical sensor pointing up. It registers itself
-as a waypoint and reports how high the trees or roof above it reach, so routes
-through it get planned over them.
+`--role=beacon`, and run `beacon` to give it a name and its coordinates. It is
+then a waypoint that is always there, with nobody standing next to it.
 
 ## The hull: `/craft.cfg`
 
@@ -602,26 +601,52 @@ it.
 
 ## Waypoint computers
 
-A **beacon** is a computer you place where you want a waypoint. Install it with
-the `beacon` role and it comes up on its own after a chunk reload — a waypoint
-that vanishes when nobody is looking at it is not a waypoint.
+A **beacon** is a computer you place where you want a waypoint. It tells the
+tower it is there for as long as it is running, so nobody has to walk over with a
+pocket computer and nobody has to add it again after the world restarts.
 
-It needs a wireless modem and **GPS**. It will not announce itself without a
-position: a beacon that guessed would send every route through the wrong place,
-and its screen says so rather than pretending.
+That is the whole job. It is a marker, not an instrument — **no sensors, nothing
+to wire up**. A wireless modem so it can be heard, and a position so it knows
+what to say.
 
-Give it an **optical sensor pointing up** and it becomes worth more than a
-coordinate. The beacon's own height is the ground it stands on; the sensor
-measures how high the trees, the roof or the platform above it reach. That
-number goes into the height map, so a route through this waypoint is planned
-*over* whatever is there rather than into it. Without a sensor it still
-registers, and says on its own screen that it is a named place and not a
-measured one.
+Install it with the `beacon` role, then:
 
-Add a **docking connector** and it reports whether the pad is occupied.
+```
+beacon
+```
 
-A beacon commands nothing and holds no conn. Break every one in the world and
-the fleet still flies; it just plans against less.
+It asks three things: a **name**, whether it is a **pad** (somewhere to land) or
+a point (somewhere to fly over), and **where it is**.
+
+```
+Where is it?
+Enter for 40 70 300, or type x y z:
+```
+
+If GPS answers, setup offers what it found and Enter takes it. If it does not,
+you type three numbers — `40 70 300` or `40,70,300`, either is fine. **GPS is
+only ever a suggestion.** A beacon that depended on it would be a waypoint that
+stopped existing whenever the satellites unloaded, which is the opposite of the
+point, and the coordinates are yours to set regardless.
+
+To change any of it later: `beacon set`, or press `S` on the beacon itself, or
+edit `/beacon.cfg` by hand — `update` never replaces it.
+
+For a row of them, skip the questions entirely:
+
+```
+beacon --at=40,70,300 --name=quarry-pad --kind=pad
+```
+
+**Optional:** a docking connector on the same computer makes it report whether
+the pad is occupied. That is the only peripheral it will ever look for.
+
+A beacon with no position announces **nothing at all**, and says so on its own
+screen. A marker in the wrong place is worse than no marker: every route through
+it would go somewhere nobody chose.
+
+Because it stands on the ground, its own height is a known ground point and goes
+into the height map for free — see below.
 
 ## Surveying
 
@@ -778,7 +803,7 @@ Also in the game, as `guide` → *When it goes wrong*.
 | Stops and climbs for no visible reason | The obstacle or clearance guard. The log says which. |
 | Drifts into a cliff while climbing | Expected, and documented above: a ship has no brakes. Raise `config.reaction`. |
 | Nothing on the **nav** tab | Waypoints live on the tower. Without one, the pocket shows only what ships have cached. |
-| A beacon shows **No position** | It has no GPS fix. It will not guess, because every route through it would then go to the wrong place. |
+| A beacon shows **No position** | Nobody has told it where it is. Press `S`, or run `beacon set`. It will not guess: a marker in the wrong place is worse than none. |
 | Route says **not surveyed** | Nobody has flown it. Not a fault — fly it high, and it will be surveyed for next time. |
 | A ship took off higher than you asked | The route's survey needed it. The log says `terrain`. |
 | `update` refused | The ship is airborne. Land it first — this is deliberate. |
@@ -801,7 +826,7 @@ Results are written to `/test-summary.txt` and `/test-*-results.txt` on the
 emulated computer rather than stdout, because headless mode redraws the entire
 terminal on every update.
 
-854 assertions. `spec.lua` covers each module on its own — the heading
+869 assertions. `spec.lua` covers each module on its own — the heading
 arithmetic and the wrap, plans and legs, sensor fusion and the ageing of a
 dead-reckoned fix, the PID loops and the integral clamp, every flight state and
 all four guards, the hull abstraction over a mock of the real peripheral API, the

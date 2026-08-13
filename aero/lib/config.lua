@@ -61,6 +61,13 @@ config.fleetFile = "/fleet.state"
 -- squinting at a hull that will not fly.
 config.surveyFile = "/aero.survey.txt"
 
+-- A beacon's own: its name, its kind, and where it is.
+--
+-- Per-computer like the others and deliberately not in manifest.txt: a beacon
+-- whose coordinates were replaced by `update` would go on calling itself the
+-- quarry pad from somewhere else entirely.
+config.beaconFile = "/beacon.cfg"
+
 --------------------------------------------------------------------------------
 -- Timing
 --------------------------------------------------------------------------------

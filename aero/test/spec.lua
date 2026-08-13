@@ -2275,60 +2275,72 @@ end
 section("beacon")
 --------------------------------------------------------------------------------
 
--- A waypoint that stands still. Driven the way the program suites drive their
--- programs -- queue the events, run the real thing, read the wire -- because a
--- beacon is small enough that the interesting parts are all in what it puts on
--- the network.
+-- A waypoint that stands still. It is a marker and nothing else: no sensors, no
+-- measurements. What is worth checking is that the coordinates it announces are
+-- the coordinates somebody set, and that it refuses to invent any.
 do
   local mock   = require("test.mockperipheral")
   local config = require("lib.config")
   local net    = require("lib.net")
 
   local realOpen, realSend, realBroadcast = net.open, net.send, net.broadcast
-  local realClock, realGps = os.clock, _G.gps
+  local realClock, realGps, realRead = os.clock, _G.gps, _G.read
   local realTimer, realCancel = os.startTimer, os.cancelTimer
   local realLabel = os.getComputerLabel()
+
+  local realSleep = os.sleep
 
   local clock = 0
   os.clock = function() return clock end
   os.startTimer = function() return 1 end
   os.cancelTimer = function() end
 
+  -- os.sleep waits for a timer event, and os.startTimer is stubbed above to
+  -- hand back a constant id without ever scheduling one -- so the cosmetic
+  -- pauses in setup would wait forever. A hang, not a failure, which is the one
+  -- outcome test/run.lua cannot report.
+  os.sleep = function() end
+
   local function runBeacon(opts)
     opts = opts or {}
 
     local w = mock.new{}
-    if opts.eye ~= false then
-      -- Pointing up. The beacon's own y is the ground, so what it cannot know
-      -- without help is what is standing above it -- and what is above it is not
-      -- moving, which is why this is the fixed sensor rather than the raycasting
-      -- one a ship carries.
-      w.opticalFixed("optical_sensor_0", { distance = opts.ceiling })
-    end
     if opts.pad then w.dockPort("docking_connector_0") end
     _G.peripheral = w.api
 
     _G.gps = { locate = function()
-      if opts.noGps then return nil end
+      if opts.gps == false then return nil end
       return 40, 70, 300
     end }
 
+    -- Setup uses read(), which is right for a wizard and wrong anywhere near an
+    -- event loop -- so it all happens before the loop starts. Answers are fed
+    -- in the order it asks: name, pad?, position.
+    local answers, asked = opts.answers or {}, 0
+    _G.read = function()
+      asked = asked + 1
+      return answers[asked] or ""
+    end
+
+    fs.delete(config.beaconFile)
+    if opts.cfg then
+      local f = fs.open(config.beaconFile, "w")
+      f.write("return " .. textutils.serialize(opts.cfg))
+      f.close()
+    end
+
     local casts = {}
-    net.open = function() net.channel, net.id = config.channel, 5 return "back" end
+    net.open = function()
+      if opts.noModem then return nil end
+      net.channel, net.id = config.channel, 5
+      return "back"
+    end
     net.send = function() return true end
     net.broadcast = function(msg) casts[#casts + 1] = msg return true end
 
-    fs.delete("/beacon.state")
-    if opts.kind then
-      writeFile("/beacon.state", textutils.serialize({ kind = opts.kind }))
-    end
-
-    for _, e in ipairs(opts.script or {}) do os.queueEvent(table.unpack(e)) end
-    os.queueEvent("key", keys.q)
-
-    -- Snapshot on every pullEvent: beacon.lua clears the terminal on its way
-    -- out, so anything read afterwards is the goodbye message. Same trap the two
-    -- UI suites document.
+    -- beacon.lua clears the terminal on the way out, so the screen is captured
+    -- on every pullEvent instead. Third time this trap has been walked into in
+    -- this project, hence the note.
     local win = window.create(term.current(), 1, 1, 51, 19, true)
     local realPull = os.pullEvent
     local screen = {}
@@ -2339,86 +2351,173 @@ do
       return realPull(...)
     end
 
+    for _, e in ipairs(opts.script or {}) do os.queueEvent(table.unpack(e)) end
+    os.queueEvent("key", keys.q)
+
+    -- loadfile, not dofile: CC's dofile takes no arguments beyond the path, so
+    -- every flag would be silently dropped and the beacon would sit at a prompt
+    -- waiting for a position that the test thought it had already given.
+    local chunk = loadfile("/beacon.lua")
     local old = term.redirect(win)
-    local ok, err = pcall(dofile, "/beacon.lua")
+    local ok, err = pcall(chunk, table.unpack(opts.args or {}))
     term.redirect(old)
     os.pullEvent = realPull
 
     net.open, net.send, net.broadcast = realOpen, realSend, realBroadcast
-    return { ok = ok, err = err, casts = casts, world = w, screen = screen }
+
+    local said = nil
+    for _, msg in ipairs(casts) do
+      if msg.type == "beacon" then said = msg end
+    end
+
+    return { ok = ok, err = err, casts = casts, said = said, screen = screen,
+             asked = asked, world = w }
   end
 
-  local r = runBeacon{}
-  check(r.ok, "a beacon runs", r.err)
-
-  local said = nil
-  for _, msg in ipairs(r.casts) do
-    if msg.type == "beacon" then said = msg end
+  local function config_()
+    if not fs.exists(config.beaconFile) then return nil end
+    local fn = loadfile(config.beaconFile)
+    if not fn then return nil end
+    local ok, cfg = pcall(fn)
+    return ok and cfg or nil
   end
-  check(said ~= nil, "and announces itself unprompted")
-  check(said and said.x == 40 and said.z == 300,
-        "at the position GPS gave it", said and said.x)
-  check(said and said.name ~= nil, "with a name", said and said.name)
-  check(said and said.ground == 70,
-        "reporting the ground, which is its own height", said and said.ground)
 
-  -- The measurement that makes it more than a coordinate. The sensor points up,
-  -- so a beacon under a canopy reports the canopy -- and a route through it gets
-  -- planned over the top rather than into it.
-  local under = runBeacon{ ceiling = 16 }
-  local roofed = nil
-  for _, msg in ipairs(under.casts) do
-    if msg.type == "beacon" then roofed = msg end
-  end
-  check(roofed and roofed.obstruction and roofed.obstruction > roofed.ground,
-        "something overhead is reported above the ground",
-        roofed and roofed.obstruction)
+  ------------------------------------------------------------------------------
+  -- Setting it up.
 
-  -- No sensor: it is a named place, not a measured one, and it must say so
-  -- rather than quietly claiming open sky.
-  local blind = runBeacon{ eye = false }
-  local plain = nil
-  for _, msg in ipairs(blind.casts) do
-    if msg.type == "beacon" then plain = msg end
-  end
-  check(plain ~= nil, "a beacon with no sensor still registers")
-  check(plain and plain.obstruction == plain.ground,
-        "and claims nothing above the ground it stands on",
-        plain and plain.obstruction)
+  -- Typed in, which is the normal way: a marker is placed deliberately and you
+  -- know where you put it.
+  local typed = runBeacon{ gps = false, answers = { "quarry-pad", "y", "10 70 300" } }
+  check(typed.ok, "a beacon runs", typed.err)
+  check(typed.said ~= nil, "and announces itself")
+  check(typed.said and typed.said.x == 10 and typed.said.y == 70
+        and typed.said.z == 300,
+        "at the coordinates that were typed in",
+        typed.said and ("%d %d %d"):format(typed.said.x, typed.said.y, typed.said.z))
+  check(typed.said and typed.said.name == "quarry-pad", "under the name given",
+        typed.said and typed.said.name)
+  check(typed.said and typed.said.kind == "pad", "and the kind",
+        typed.said and typed.said.kind)
 
-  -- No position is the one thing it must not paper over: a beacon that guessed
-  -- would send every route through the wrong place.
-  local lost = runBeacon{ noGps = true }
-  local anything = nil
-  for _, msg in ipairs(lost.casts) do
-    if msg.type == "beacon" then anything = msg end
-  end
-  check(anything == nil, "a beacon with no position announces nothing at all")
+  -- Written down, so the next boot asks nothing.
+  local saved = config_()
+  check(saved and saved.x == 10 and saved.name == "quarry-pad",
+        "and it is written to /beacon.cfg", saved and saved.x)
 
-  local onScreen = false
-  for _, line in ipairs(lost.screen) do
-    if tostring(line):find("No position", 1, true) then onScreen = true end
-  end
-  check(onScreen, "and says why on its own screen", lost.screen[2])
+  local again = runBeacon{ gps = false, cfg = saved }
+  check(again.asked == 0, "a beacon that knows where it is asks nothing",
+        again.asked)
+  check(again.said and again.said.x == 10, "and says the same thing",
+        again.said and again.said.x)
 
-  -- It answers when asked, so a tower that has just booted does not wait out
-  -- the beat.
-  local asked = runBeacon{
+  -- Commas or spaces, because insisting on one of them would be rude.
+  local commas = runBeacon{ gps = false, answers = { "shed", "n", "1,2,3" } }
+  check(commas.said and commas.said.x == 1 and commas.said.z == 3,
+        "commas work as well as spaces",
+        commas.said and commas.said.x)
+  check(commas.said and commas.said.kind == "point",
+        "and a point is a point", commas.said and commas.said.kind)
+
+  -- Nonsense is asked again rather than accepted. A marker in the wrong place
+  -- is worse than no marker.
+  local retry = runBeacon{ gps = false,
+                           answers = { "x", "n", "over there", "5 6 7" } }
+  check(retry.said and retry.said.x == 5,
+        "a position that is not three numbers is asked for again",
+        retry.said and retry.said.x)
+
+  ------------------------------------------------------------------------------
+  -- GPS is a suggestion and never a requirement.
+
+  local offered = runBeacon{ answers = { "pad", "y", "" } }
+  check(offered.said and offered.said.x == 40 and offered.said.z == 300,
+        "pressing enter takes what GPS offered",
+        offered.said and offered.said.x)
+
+  local overridden = runBeacon{ answers = { "pad", "y", "1 2 3" } }
+  check(overridden.said and overridden.said.x == 1,
+        "and typing something overrides it",
+        overridden.said and overridden.said.x)
+
+  -- The saved position wins over GPS on a later boot: a beacon does not move
+  -- because a satellite came back with a slightly different answer.
+  local fixed = runBeacon{ cfg = { name = "fixed", kind = "point",
+                                   x = -100, y = 12, z = -400 } }
+  check(fixed.said and fixed.said.x == -100 and fixed.said.z == -400,
+        "a saved position beats GPS, and negatives survive",
+        fixed.said and fixed.said.x)
+
+  ------------------------------------------------------------------------------
+  -- Unattended, for setting up a row of them.
+
+  local flags = runBeacon{
+    gps = false,
+    args = { "--at=8,9,10", "--name=far-pad", "--kind=pad" },
+  }
+  check(flags.asked == 0, "flags ask nothing", flags.asked)
+  check(flags.said and flags.said.x == 8 and flags.said.kind == "pad",
+        "and are used", flags.said and flags.said.x)
+  local written = config_()
+  check(written and written.name == "far-pad",
+        "and written down, so the next boot needs no flags either",
+        written and written.name)
+
+  ------------------------------------------------------------------------------
+  -- What it does not do.
+
+  -- No sensors. It is a marker; the only peripheral it will ever look for is a
+  -- docking connector, and that is optional.
+  local bare = runBeacon{ gps = false, cfg = { name = "bare", kind = "point",
+                                               x = 1, y = 2, z = 3 } }
+  check(bare.ok, "a beacon with nothing attached runs perfectly well", bare.err)
+  check(bare.said ~= nil, "and is a waypoint")
+  check(bare.said and bare.said.occupied == nil,
+        "with nothing to say about a pad it has no connector for")
+
+  -- The ground it stands on is free knowledge and needs no instrument.
+  check(bare.said and bare.said.ground == 2,
+        "its own height is the ground here", bare.said and bare.said.ground)
+
+  local padded = runBeacon{ pad = true, gps = false,
+                            cfg = { name = "p", kind = "pad", x = 1, y = 2, z = 3 } }
+  check(padded.said and padded.said.occupied == false,
+        "a docking connector reports the pad free",
+        tostring(padded.said and padded.said.occupied))
+
+  padded.world.ship.docked = "Kestrel"
+  local busy = runBeacon{ pad = true, gps = false,
+                          cfg = { name = "p", kind = "pad", x = 1, y = 2, z = 3 },
+                          script = {} }
+  check(busy.said ~= nil, "and a pad beacon still announces itself")
+
+  ------------------------------------------------------------------------------
+  -- Answering a roll call, so a tower that has just booted need not wait.
+
+  local asked_ = runBeacon{
+    gps = false,
+    cfg = { name = "r", kind = "point", x = 1, y = 2, z = 3 },
     script = { { "modem_message", "back", config.channel, config.channel,
                  { aero = config.protocol, from = 9, to = "*",
                    body = { type = "beacon?" } } } },
   }
   local replies = 0
-  for _, msg in ipairs(asked.casts) do
+  for _, msg in ipairs(asked_.casts) do
     if msg.type == "beacon" then replies = replies + 1 end
   end
   check(replies >= 2, "a beacon answers a roll call", replies)
 
-  os.clock, _G.gps = realClock, realGps
+  -- No modem is a message, not a crash.
+  local deaf = runBeacon{ noModem = true, gps = false,
+                          cfg = { name = "d", kind = "point", x = 1, y = 2, z = 3 } }
+  check(deaf.ok, "no modem is survivable", deaf.err)
+  check(#deaf.casts == 0, "and nothing is sent")
+
+  os.clock, _G.gps, _G.read = realClock, realGps, realRead
   os.startTimer, os.cancelTimer = realTimer, realCancel
+  os.sleep = realSleep
   os.setComputerLabel(realLabel)
   _G.peripheral = realPeripheral
-  fs.delete("/beacon.state")
+  fs.delete(config.beaconFile)
 end
 
 --------------------------------------------------------------------------------

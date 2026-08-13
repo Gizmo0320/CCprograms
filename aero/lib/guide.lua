@@ -381,48 +381,76 @@ a field.
 { title = "Waypoint computers", body = [[
 A BEACON is a computer you
 put where you want a
-waypoint. It registers
-itself with the tower, so
-nobody has to walk there
-with a pocket computer,
-and it does not forget.
+waypoint. It tells the
+tower it is there, for as
+long as it is running, so
+nobody has to walk over
+with a pocket computer
+and nobody has to add it
+again after a restart.
+
+That is the whole job. It
+is a marker. No sensors,
+nothing to wire up: a
+wireless modem so it can
+be heard, and a position
+so it knows what to say.
+
+SETTING IT UP
 
 Install with the beacon
-role, or set role =
-"beacon" in /aero.cfg.
+role, then run:
 
-It needs:
-  a wireless modem
-  GPS
-  an OPTICAL SENSOR
-  POINTING UP (optional)
+  beacon
 
-The sensor is what makes
-it worth more than a
-tapped-in point. The
-beacon's own height is
-the ground; the sensor
-tells it how high the
-trees or the roof above
-it reach. A route through
-here is then planned OVER
-them.
+It asks three things:
 
-Without a sensor it is
-still a waypoint, and it
-says on its screen that
-it is a named place and
-not a measured one.
+ name   what ships will
+        call it
+ pad?   y if ships land
+        here, n if it is
+        just somewhere to
+        fly over
+ where  type  x y z
+        or  x,y,z
 
-Add a docking connector
-and it reports whether
-the pad is occupied.
+If GPS answers it offers
+what it found, so Enter
+takes it. If not, you
+type the numbers. Either
+way they are yours: GPS
+is a suggestion and never
+a requirement.
 
-A beacon commands
-nothing. Break every one
-in the world and the
-fleet still flies -- it
-just plans against less.
+Q at the position prompt
+leaves it unset.
+
+CHANGING IT
+
+  beacon set
+
+or press S on the beacon
+itself. Or edit
+/beacon.cfg by hand --
+update never touches it.
+
+ALL AT ONCE
+
+  beacon --at=40,70,300
+         --name=quarry
+         --kind=pad
+
+OPTIONAL
+
+Put a docking connector
+on the same computer and
+it reports whether the
+pad is free.
+
+A beacon with no position
+says nothing at all. A
+marker in the wrong place
+is worse than no marker.
 ]] },
 
 { title = "Surveying", body = [[
@@ -771,8 +799,9 @@ these, so yours survive:
    and its log
  /aero.survey.txt
    what probe last saw
- /beacon.state
-   a beacon's own kind
+ /beacon.cfg
+   a beacon's name, kind
+   and position
 
 Programs:
 

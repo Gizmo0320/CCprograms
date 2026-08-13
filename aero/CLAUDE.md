@@ -15,7 +15,7 @@ contraptions:
 
 Plus `probe.lua`, a hardware survey that writes a starter `/craft.cfg` from what
 is actually attached to the hull, and `beacon.lua` -- a computer placed in the
-world that registers itself as a waypoint and measures what is standing above it.
+world, given a name and coordinates, that then announces itself as a waypoint.
 
 All communicate over a raw modem channel via `lib/net.lua` — not rednet. The
 channel is configurable per network, which is what lets several independent
@@ -473,9 +473,14 @@ Bounded like the log, for the same reason -- it grows with every block ever flow
 over -- and evicted oldest-first, because ground under a route nobody flies any
 more matters less than ground under one they do.
 
-Beacons feed the same map. A beacon's own y is the ground it stands on, so the
-only thing it needs a sensor for is what is *above* it, and that is the number a
-tapped-in waypoint can never give.
+Beacons feed the same map, for free and with no hardware: a beacon's own y **is**
+the ground where it stands, so one known point costs nothing to report.
+
+A beacon is a marker and nothing more. It was first built to measure what stood
+above it with an upward optical sensor, which was a solution looking for a
+problem -- it made a waypoint depend on hardware, and on GPS, to do a job that is
+really "remember these three numbers and say them". Coordinates are typed in and
+kept in `/beacon.cfg`; GPS is offered as a default and never required.
 
 ### State persistence
 

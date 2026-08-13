@@ -329,10 +329,9 @@ end
 
 if ROLE == "beacon" then
   print()
-  say("A beacon needs GPS to know where it is. Give it", colours.yellow)
-  say("an optical sensor pointing UP and it will also", colours.yellow)
-  say("report how high the trees or roof above it reach,", colours.yellow)
-  say("so routes through here are planned over them.", colours.yellow)
+  say("Next: run `beacon` on this computer. It asks for", colours.yellow)
+  say("a name, whether it is a pad, and where it is --", colours.yellow)
+  say("and then it is a waypoint. Nothing to wire up.", colours.yellow)
 end
 
 if ROLE == "pilot" then
