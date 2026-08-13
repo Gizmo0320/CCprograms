@@ -177,6 +177,32 @@ through it, all the same rule:
   engine off.
 - **Nothing is written twice.** A ship holding cruise asks for the same throttle
   five times a second, and `apply` drops anything that changes nothing.
+- **The hardware is not fixed.** Assembling a contraption attaches every
+  peripheral on it and disassembling detaches them all, so `hull.remount` re-runs
+  the resolve on the attach event. Resolving once at boot meant a pilot started
+  before the ship was assembled — the ordinary order of operations — reported
+  that it could not find the navigation table and went on saying so after the
+  table was plainly there. `setup` and `configure` had rescanned on attach from
+  the beginning, which is exactly why they could see hardware the flying program
+  never had. cc-mek-scada's `ppm.remount` is the same idea, for the same reason:
+  a peripheral going away is a normal event, not an error to record once and
+  carry to the ground.
+
+An optical sensor's **range is set on the block**, and the mod raises a Lua error
+rather than clamping when asked for more. `hull.reach` therefore negotiates —
+write nothing if the block already sees far enough, else ask and keep halving,
+and let its own setting stand if it refuses everything — then reads the result
+back rather than assuming it. Demanding 128 and carrying on regardless put the
+error in `faults.ground` and then read every distance as though the range asked
+for had been granted.
+
+The clearance read is defensive for the same reason. It used to be gated
+entirely on `hasHit() == true`, so on any build where that is missing or throws,
+the clearance was nil for the whole flight — no terrain guard, no height above
+ground, no survey, and all three indistinguishable from flat ground a long way
+down. Now the distance is taken first and `hasHit` only vetoes it. **Zero is a
+reading, not a miss**: a ship on the pad has zero clearance and that is precisely
+what `land` waits for. Only `fly_spec` found that one.
 
 ### Redstone
 
@@ -580,8 +606,12 @@ it is deliberately **not** in `manifest.txt`. It also carries `role`
 
 There is no Create Aeronautics outside the game, so `test/mockperipheral.lua`
 supplies the peripherals — with the mod's real method names — and the real
-modules run against them under CraftOS-PC. See the Tests section of `README.md`
-for the command. Six suites, run in that order by `test/run.lua`:
+modules run against them in an emulator. **CCEmuX** and **CraftOS-PC** both work;
+see the Tests section of `README.md` for both commands. CCEmuX has no `--script`
+flag — it boots a directory's `startup.lua`, and this tree's real one flies a
+ship — so `test/ccemux.lua` is the shim that goes in as `startup.lua` instead,
+and it calls `os.shutdown()` because without that a finished suite and a hung one
+look identical. Six suites, run in that order by `test/run.lua`:
 
 | Suite | What it covers |
 | --- | --- |

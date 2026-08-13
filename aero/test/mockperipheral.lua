@@ -323,17 +323,38 @@ function mock.new(opts)
   function world.optical(side, opts2)
     opts2 = opts2 or {}
     local d = world.add(side, "optical_sensor", { range = opts2.range or 16 })
+
+    -- `max` is the range the block itself will accept, which the real mod
+    -- enforces by **raising a Lua error** rather than by clamping. Without it
+    -- the mock says yes to everything and the negotiation in hull.reach has
+    -- nothing to negotiate with.
+    d.max = opts2.max
+
     d.methods = {
-      setRange = function(n) record(d, "setRange", n); d.range = tonumber(n) or d.range end,
-      getRange = function() return d.range end,
-      hasHit = function()
-        return (world.ship.y - world.terrain(world.ship.x, world.ship.z)) <= d.range
+      setRange = function(n)
+        record(d, "setRange", n)
+        n = tonumber(n) or d.range
+        if d.max and n > d.max then
+          error("range must be between 1 and " .. d.max, 0)
+        end
+        d.range = n
       end,
+      getRange = function() return d.range end,
       getDistance = function()
         return world.ship.y - world.terrain(world.ship.x, world.ship.z)
       end,
       getBlock = function() return "minecraft:stone" end,
     }
+
+    -- Some builds do not have hasHit, or have it under another name. The
+    -- clearance read used to depend on it entirely, so a sensor without one is
+    -- worth being able to build.
+    if not opts2.noHasHit then
+      d.methods.hasHit = function()
+        return (world.ship.y - world.terrain(world.ship.x, world.ship.z)) <= d.range
+      end
+    end
+
     return d
   end
 

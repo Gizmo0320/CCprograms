@@ -48,6 +48,7 @@ hull.current     = {}    -- [control] = { field = value } we are actually drivin
 hull.wires       = {}    -- ["<relay|*>:<face>"] = { control, ... } sharing a side
 hull.tilt        = nil   -- the gimbal sensor read over redstone, if wired that way
 hull.signals     = {}    -- [name] = redstone inputs read this sweep
+hull.reach       = {}    -- [role] = how far an optical sensor will actually see
 
 -- Fuel and thrust are read on their own slower clock, see `read`.
 hull.fuel   = { fuel = nil, capacity = nil, burn = nil, thrust = nil, lift = nil }
@@ -340,6 +341,7 @@ function hull.reset()
   hull.controls, hull.order, hull.instruments = {}, {}, {}
   hull.limits, hull.gains, hull.mix = {}, {}, {}
   hull.problems, hull.faults, hull.current = {}, {}, {}
+  hull.reach = {}
   hull.wires, hull.signals, hull.inputs = {}, {}, {}
   hull.tilt = nil
   hull.fuel, hull.fuelAt = {}, -math.huge
@@ -773,12 +775,161 @@ function hull.load(path)
   return hull.define(craft, path)
 end
 
+--- Work out again what is attached, because it has changed.
+--
+-- Everything else in this module assumes the hardware resolved at boot is the
+-- hardware for the rest of the flight. On a Create Aeronautics contraption that
+-- assumption is simply false: **assembling a ship attaches every peripheral on
+-- it, and disassembling it detaches them all.** A pilot started on the pad
+-- before the ship was assembled resolved no navigation table, no altimeter and
+-- no optical sensors, and then held that answer forever -- so the ship was
+-- assembled, every instrument appeared, and the flight computer went on
+-- reporting that it could not find any of them.
+--
+-- That is not an exotic failure. It is the ordinary order of operations: turn
+-- the computer on, then assemble the ship.
+--
+-- `setup.lua` and `configure.lua` have always rescanned on `peripheral` and
+-- `peripheral_detach`, which is exactly why the hardware they showed could
+-- disagree with the hardware the pilot was flying with. This is the pilot's
+-- half of that, and cc-mek-scada's `ppm.remount` is the same idea: a peripheral
+-- going away is a normal event to be handled, not an error to be recorded once
+-- and carried to the ground.
+--
+-- Re-running `define` costs a resolve and a `claim`, so it is driven by the
+-- attach event rather than polled. `claim` is safe to repeat -- it sets control
+-- modes and throttle overrides that are already set -- and re-defining clears
+-- `hull.current`, which is what makes `apply` write every control again rather
+-- than skip them as unchanged. After a remount that is right: what a newly
+-- attached bearing is doing is not what we last told the old one.
+--
+-- Returns whether the set of resolved instruments actually changed, so the
+-- caller can log something worth reading instead of a line per detach.
+function hull.remount()
+  if not hull.craft then return false end
+
+  local before = {}
+  for role, inst in pairs(hull.instruments) do before[role] = inst.side end
+
+  -- Deliberately the stored table, not a re-read of the file. A remount is
+  -- about the world changing, not the configuration, and re-reading would let
+  -- a half-saved /craft.cfg take a ship down mid-flight.
+  hull.define(hull.craft, hull.name)
+  hull.claim()
+
+  local changed = false
+  for role, inst in pairs(hull.instruments) do
+    if before[role] ~= inst.side then changed = true end
+    before[role] = nil
+  end
+  if next(before) then changed = true end
+
+  return changed
+end
+
 function hull.get(name) return hull.controls[name] end
 function hull.count() return #hull.order end
 
 --------------------------------------------------------------------------------
 -- Taking and giving back control
 --------------------------------------------------------------------------------
+
+--- Read one optical sensor: how far to the first thing it can see, and what.
+--
+-- Returns nil when the beam hit nothing. **nil is not zero and must never be
+-- allowed to become it** -- a ground sensor reading zero over a canyon would
+-- have the terrain guard climbing away from nothing at full power, and a
+-- forward sensor reading zero in clear air would stop the ship dead.
+--
+-- The awkward part is deciding whether the beam hit anything, because there are
+-- two ways to ask and this program used to depend entirely on the more
+-- fragile one. `hasHit()` gated every clearance read, so on any build where
+-- that method is missing, renamed, or throws, `call` recorded a fault nobody
+-- looks at and the clearance was nil for the whole flight. The ship then flew
+-- with no terrain guard, no height above ground on the cockpit, and no survey
+-- -- and every one of those failures looks from the cockpit exactly like flat
+-- ground a long way down.
+--
+-- So ask the way that degrades: take the distance, and use `hasHit` only to
+-- veto it. A distance at or beyond the sensor's own range is the idiom for
+-- "nothing there" and is treated as a miss whatever `hasHit` says.
+local function eye(role, side)
+  local d = tonumber((call(role, side, "getDistance")))
+
+  -- **Zero is a reading, not a miss.** A ship sitting on the pad has zero
+  -- clearance, and that is precisely the number `land` waits for: rejecting it
+  -- as "nothing there" left a ship on the ground still in the landing state
+  -- with the hull never handed back. Only a negative distance is nonsense.
+  if not d or d < 0 then return nil end
+
+  local limit = hull.reach[role]
+  if limit and d >= limit - 0.001 then return nil end
+
+  -- Only now consult hasHit, and only to say no. Missing or broken, we keep the
+  -- distance we already have rather than throwing the flight's only ground
+  -- reference away over an optional method.
+  local hit, failed = call(role, side, "hasHit")
+  if not failed then
+    hull.faults[role] = nil
+    if hit == false then return nil end
+  else
+    hull.faults[role] = nil
+  end
+
+  return d, call(role, side, "getBlock")
+end
+
+--- Ask an optical sensor to see further, and accept the answer if it says no.
+--
+-- This program used to simply call `setRange(want)` and carry on as though it
+-- had worked. It does not always work, and the mod's own reference says why:
+-- **"invalid ranges, modes, directions, ids ... raise Lua errors"**. The
+-- maximum a sensor will accept is set on the block, by whoever placed it. A
+-- flight computer demanding 128 from a sensor configured for 32 got an error,
+-- swallowed it into `faults.ground`, and then read every distance as though the
+-- range it asked for had been granted.
+--
+-- So negotiate rather than demand:
+--
+--   * if the block already sees at least as far as we want, **do not write at
+--     all**. The commonest case, and the one where fighting it can only lose;
+--   * otherwise try, and on refusal keep halving. Somewhere between what we
+--     want and what it has there is usually a number it will take;
+--   * if it refuses everything, the block's own setting stands. That is the
+--     correct outcome and not a fault: the player configured it on the panel
+--     and we are a guest here.
+--
+-- What we must not do is guess. `hull.reach` records what the sensor says it
+-- can see *after* all this, read back rather than assumed, because every other
+-- decision -- whether a nil clearance means "flat ground far below" or "sensor
+-- broken", whether the terrain survey can run at all -- is made against it.
+local function reach(role, side, want)
+  want = math.floor(math.max(want, 4))
+
+  local have = tonumber((call(role, side, "getRange")))
+  if have and have >= want then
+    hull.reach[role] = have
+    return have
+  end
+
+  local try = want
+  while try > 4 do
+    local _, failed = call(role, side, "setRange", try)
+    if not failed then
+      -- Read it back. A block is free to clamp rather than refuse, and a clamp
+      -- looks exactly like success from here.
+      hull.reach[role] = tonumber((call(role, side, "getRange"))) or try
+      return hull.reach[role]
+    end
+    try = math.floor(try / 2)
+  end
+
+  -- Nothing was accepted. Clear the fault the attempts left behind: the sensor
+  -- is working perfectly, it just will not be told.
+  hull.faults[role] = nil
+  hull.reach[role] = have
+  return have
+end
 
 --- Tell every control it is ours now.
 --
@@ -798,24 +949,13 @@ function hull.claim()
     end
   end
 
-  -- The optical sensor is the terrain guard's only eye, and its default range is
-  -- shorter than the clearance we want to keep. Asking for twice the limit means
-  -- the guard sees the ground coming rather than arriving.
-  -- Far enough to see the ground from cruise altitude, not just far enough for
-  -- the guard.
-  --
-  -- It used to ask for twice the clearance limit -- sixteen blocks on a typical
-  -- hull -- which is plenty of warning and useless for everything else. A ship
-  -- at a hundred and twenty over ground at sixty-four saw nothing at all, so
-  -- `clearance` was nil for the whole flight: the cockpit showed no height above
-  -- ground, and **the survey never recorded a single sample**, because a ground
-  -- reading is exactly what it is built from. The height map stayed empty and
-  -- nobody could see why.
+  -- The optical sensor is the terrain guard's only eye, and how far it can see
+  -- decides how much of this program works at all.
   local ground = hull.instruments.ground
   if ground then
-    local want = math.max(config.groundRange,
-                          (hull.limits.clearance or config.clearance) * 2)
-    call("ground", ground.side, "setRange", math.floor(want))
+    reach("ground", ground.side,
+          math.max(config.groundRange,
+                   (hull.limits.clearance or config.clearance) * 2))
   end
 
   -- The forward sensor wants to see much further: far enough that the obstacle
@@ -824,8 +964,18 @@ function hull.claim()
   local forward = hull.instruments.forward
   if forward then
     local cruise = tonumber(hull.limits.cruise) or 10
-    local want = math.max(cruise * config.reaction * 2, config.standoff * 2)
-    call("forward", forward.side, "setRange", math.floor(want))
+    reach("forward", forward.side,
+          math.max(cruise * config.reaction * 2, config.standoff * 2))
+  end
+
+  -- Say so when a sensor cannot see far enough to be useful, rather than
+  -- leaving a blank clearance on the cockpit to be read as flat ground.
+  local far = hull.reach.ground
+  if ground and far and far < 32 then
+    hull.problems[#hull.problems + 1] = string.format(
+      "ground sensor sees %d blocks and would not be told further -- above that "
+      .. "height the cockpit shows no clearance and the survey records nothing. "
+      .. "Raise the range on the sensor block itself.", far)
   end
 end
 
@@ -1107,24 +1257,14 @@ function hull.read(now)
   end
 
   if inst.ground then
-    -- Clearance is nil when the beam hit nothing, which is not the same as a
-    -- clearance of zero and must never be allowed to become it -- a sensor that
-    -- reads zero over a canyon would have the terrain guard climbing away from
-    -- nothing at full power.
-    if call("ground", inst.ground.side, "hasHit") == true then
-      raw.clearance = tonumber((call("ground", inst.ground.side, "getDistance")))
-      raw.ground    = call("ground", inst.ground.side, "getBlock")
-    end
+    raw.clearance, raw.ground = eye("ground", inst.ground.side)
   end
 
   -- What is in front. Same nil-is-not-zero rule as the ground sensor, and it
   -- matters more here: a forward sensor that read zero when it saw nothing would
   -- have the obstacle guard stopping the ship dead in clear air.
   if inst.forward then
-    if call("forward", inst.forward.side, "hasHit") == true then
-      raw.ahead = tonumber((call("forward", inst.forward.side, "getDistance")))
-      raw.aheadBlock = call("forward", inst.forward.side, "getBlock")
-    end
+    raw.ahead, raw.aheadBlock = eye("forward", inst.forward.side)
   end
 
   -- The data link, which publishes where the ship is going so gyro-guided parts

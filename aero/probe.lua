@@ -15,14 +15,74 @@
 --
 --   probe            survey, and write /craft.cfg if there is not one
 --   probe --force    survey, and write /craft.cfg.new even if there is
+--   probe --eyes     watch every optical sensor live, and stop
 
 local hull = require("lib.hull")
 local config = require("lib.config")
 
 local args = { ... }
-local force = false
+local force, watch = false, false
 for _, a in ipairs(args) do
   if a == "--force" or a == "-f" then force = true end
+  if a == "--eyes" or a == "-e" then watch = true end
+end
+
+--------------------------------------------------------------------------------
+-- probe --eyes: what the optical sensors actually say
+--------------------------------------------------------------------------------
+
+-- An optical sensor that is not working looks, from every other screen in this
+-- program, exactly like one pointed at a long drop: no clearance, no survey, no
+-- terrain guard, and nothing anywhere saying why. This shows the raw answers,
+-- including which calls failed, so the difference is visible in one glance
+-- instead of being deduced from a ship that will not climb.
+if watch then
+  local sides = {}
+  for _, side in ipairs(peripheral.getNames()) do
+    local ok, kind = pcall(peripheral.getType, side)
+    if ok and kind == "optical_sensor" then sides[#sides + 1] = side end
+  end
+
+  -- Which role /craft.cfg gives each one, if it has been configured. Knowing a
+  -- sensor works is only half the question; the other half is whether this
+  -- program is asking the one it thinks it is.
+  local role = {}
+  if fs.exists(config.craftFile) then
+    local okLoad, craft = pcall(dofile, config.craftFile)
+    if okLoad and type(craft) == "table" and type(craft.instruments) == "table" then
+      for r, side in pairs(craft.instruments) do
+        if type(side) == "string" then role[side] = r end
+      end
+    end
+  end
+
+  local function ask(side, method, ...)
+    local ok, result = pcall(peripheral.call, side, method, ...)
+    if not ok then return "ERROR: " .. tostring(result):gsub("^.*:%d+: ", "") end
+    if result == nil then return "nil" end
+    return tostring(result)
+  end
+
+  if #sides == 0 then
+    print("No optical sensors attached to this computer.")
+    print("They must be on the same wired network, or touching it.")
+    return
+  end
+
+  print(("%d optical sensor(s). Ctrl-T to stop."):format(#sides))
+  while true do
+    term.clear(); term.setCursorPos(1, 1)
+    print("optical sensors            " .. textutils.formatTime(os.time(), true))
+    for _, side in ipairs(sides) do
+      print("")
+      print(side .. (role[side] and ("  [" .. role[side] .. "]") or "  [unassigned]"))
+      print("  range    " .. ask(side, "getRange"))
+      print("  hasHit   " .. ask(side, "hasHit"))
+      print("  distance " .. ask(side, "getDistance"))
+      print("  block    " .. ask(side, "getBlock"))
+    end
+    os.sleep(0.5)
+  end
 end
 
 --------------------------------------------------------------------------------

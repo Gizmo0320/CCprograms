@@ -204,6 +204,25 @@ table" has four causes:
 
 setup tells the four
 apart. Nothing else can.
+
+The second one used to
+be permanent. Assembling
+a contraption attaches
+every peripheral on it,
+and the pilot resolved
+its hardware once at
+boot -- so turning the
+computer on and THEN
+assembling the ship left
+it saying it could not
+find a table that was
+plainly there.
+
+It now re-resolves
+whenever a peripheral
+attaches, and logs it.
+Assembly order no longer
+matters.
 ]] },
 
 { title = "The hull file", body = [[
@@ -343,6 +362,24 @@ forward
   so one guard would
   read a number that
   means something else.
+
+  Run  probe --eyes  to
+  watch what the sensors
+  actually report, live,
+  and which role each
+  one has.
+
+  Range is set on the
+  SENSOR BLOCK. The ship
+  asks for 128 down and
+  takes what it is given
+  -- it cannot raise the
+  block's own maximum.
+  Under 32 and the panel
+  says so, because blank
+  clearance looks just
+  like flat ground far
+  below.
 gimbal
   gimbal sensor. Pitch
   and roll as real

@@ -574,6 +574,23 @@ local function listenerTask()
 
     if e == "terminate" then
       pilot.stop = true
+
+    elseif e == "peripheral" or e == "peripheral_detach" then
+      -- Assembling a contraption attaches every peripheral on it; taking it
+      -- apart detaches them all. Without this the hardware resolved at boot is
+      -- the hardware for the rest of the computer's life, so a pilot started
+      -- before the ship was assembled -- the ordinary order of operations --
+      -- reported that it could not find the navigation table and went on saying
+      -- so after the table was plainly there.
+      --
+      -- Handled here rather than in the control loop because the loop is timed
+      -- and this is not: the resolve is worth doing at the moment the world
+      -- changes, and the loop must not grow a scan it does five times a second.
+      local ok, changed = pcall(hull.remount)
+      if ok and changed then
+        event({ what = "hardware", why = e == "peripheral" and "attached" or "detached" })
+      end
+
     else
       local from, msg = net.decode(e, a, b, c, d)
       if from then

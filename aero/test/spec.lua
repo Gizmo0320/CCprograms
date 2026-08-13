@@ -2070,6 +2070,163 @@ do
         "the forward sensor is scaled to how far the ship takes to stop",
         forwardRange)
 
+  ------------------------------------------------------------------------------
+  -- Asking for a range the block will not give.
+  --
+  -- The mod raises a Lua error for a range it does not accept, and the maximum
+  -- is set on the block by whoever placed it. This program used to call
+  -- setRange and carry on regardless: the error went into faults.ground, and
+  -- every distance afterwards was read as though the range asked for had been
+  -- granted.
+  ------------------------------------------------------------------------------
+  do
+    local w2 = mock.new{}
+    w2.navTable("nav0"); w2.altimeter("alt0")
+    w2.optical("optical_sensor_0", { range = 16, max = 32 })
+    _G.peripheral = w2.api
+
+    hull.define(craft({ nav = "nav0", alt = "alt0", ground = "optical_sensor_0" }))
+    hull.claim()
+
+    check(w2.device("optical_sensor_0").range == 32,
+          "a sensor that refuses 128 is still talked up to the 32 it allows",
+          w2.device("optical_sensor_0").range)
+    check(hull.reach.ground == 32,
+          "and the reach we record is what it granted, not what we asked for",
+          hull.reach.ground)
+    check(hull.faults.ground == nil,
+          "a refused range is not a fault -- the sensor works, it has a limit",
+          hull.faults.ground)
+
+    -- And the reading stays honest at the new range: inside it, a real number;
+    -- beyond it, nil rather than a distance the sensor cannot have measured.
+    w2.ship.x, w2.ship.y, w2.ship.z = 0, 84, 0
+    check(near(hull.read(1).clearance, 20),
+          "inside the granted range the clearance is real", hull.read(1).clearance)
+
+    w2.ship.y = 120
+    check(hull.read(2).clearance == nil,
+          "beyond it the clearance is nil, never a number it could not see")
+  end
+
+  ------------------------------------------------------------------------------
+  -- A sensor that will not be told anything at all.
+  ------------------------------------------------------------------------------
+  do
+    local w2 = mock.new{}
+    w2.navTable("nav0"); w2.altimeter("alt0")
+    w2.optical("optical_sensor_0", { range = 16, max = 16 })
+    _G.peripheral = w2.api
+
+    hull.define(craft({ nav = "nav0", alt = "alt0", ground = "optical_sensor_0" }))
+    hull.claim()
+
+    check(w2.device("optical_sensor_0").range == 16,
+          "a sensor that refuses everything keeps its own setting")
+    check(hull.faults.ground == nil, "and is still not a fault")
+
+    -- But it must be *said*. Sixteen blocks of vision means no clearance above
+    -- sixteen and no survey ever, and a blank clearance on the cockpit reads
+    -- exactly like flat ground a long way down.
+    local warned = false
+    for _, p in ipairs(hull.problems) do
+      if p:find("ground sensor sees") then warned = true end
+    end
+    check(warned, "and says out loud that it cannot see far enough to be useful")
+  end
+
+  ------------------------------------------------------------------------------
+  -- A build with no hasHit.
+  --
+  -- Every clearance read used to be gated on `hasHit() == true`. On any build
+  -- where that is missing or throws, the call recorded a fault nobody reads and
+  -- the clearance was nil for the whole flight -- no terrain guard, no height
+  -- above ground, no survey, and all three looking exactly like flat ground.
+  ------------------------------------------------------------------------------
+  do
+    local w2 = mock.new{}
+    w2.navTable("nav0"); w2.altimeter("alt0")
+    w2.optical("optical_sensor_0", { range = 128, noHasHit = true })
+    _G.peripheral = w2.api
+
+    hull.define(craft({ nav = "nav0", alt = "alt0", ground = "optical_sensor_0" }))
+    hull.claim()
+
+    w2.ship.x, w2.ship.y, w2.ship.z = 0, 100, 0
+    local r = hull.read(1)
+    check(near(r.clearance, 36),
+          "a sensor with no hasHit still gives a clearance", r.clearance)
+    check(hull.faults.ground == nil,
+          "and the missing method is not recorded as a fault", hull.faults.ground)
+
+    -- The distance alone still has to mean nothing when it means nothing.
+    w2.ship.y = 300
+    check(hull.read(2).clearance == nil,
+          "and out of range is still nil, decided on the range alone")
+  end
+
+  _G.peripheral = realPeripheral
+end
+
+--------------------------------------------------------------------------------
+section("hull: hardware that comes and goes")
+--------------------------------------------------------------------------------
+
+-- Assembling a Create Aeronautics contraption attaches every peripheral on it.
+-- The pilot used to resolve its hardware once at boot and hold that answer for
+-- the life of the computer, so starting the flight computer and *then*
+-- assembling the ship -- the ordinary order of operations -- left it reporting
+-- that it could not find the navigation table while the table sat there.
+do
+  local mock = require("test.mockperipheral")
+  local hull = require("lib.hull")
+
+  local craft = { controls = {}, mix = {},
+                  instruments = { nav = "nav0", alt = "alt0",
+                                  ground = "optical_sensor_0" },
+                  limits = { clearance = 8, cruise = 12 } }
+
+  -- Boot with nothing attached: the ship is not assembled yet.
+  local w = mock.new{}
+  _G.peripheral = w.api
+  hull.define(craft)
+
+  check(hull.instruments.nav == nil, "before assembly there is no navigation table")
+
+  -- Now assemble.
+  w.navTable("nav0"); w.altimeter("alt0"); w.optical("optical_sensor_0", { range = 128 })
+
+  check(hull.instruments.nav == nil,
+        "and nothing notices on its own -- CC raises an event, it does not re-resolve")
+
+  local changed = hull.remount()
+  check(changed, "remount reports that the hardware really did change")
+  check(hull.instruments.nav and hull.instruments.nav.side == "nav0",
+        "and the navigation table is found the moment the ship is assembled")
+  check(hull.instruments.ground ~= nil, "along with everything else on it")
+
+  -- And it reads, which is the whole point: resolving the side is no use if the
+  -- fault recorded while it was missing is still sitting there.
+  w.ship.x, w.ship.y, w.ship.z = 0, 100, 0
+  local raw = hull.read(1)
+  check(raw.pos ~= nil, "the fix comes back straight away", raw.pos)
+  check(raw.clearance ~= nil, "and so does the clearance", raw.clearance)
+  check(hull.faults.nav == nil, "with no fault left over from when it was absent")
+
+  -- Taking the ship apart is the same event in reverse, and must not throw.
+  local w2 = mock.new{}
+  _G.peripheral = w2.api
+  local ok, gone = pcall(hull.remount)
+  check(ok, "disassembly is survivable", gone)
+  check(hull.instruments.nav == nil, "and the instruments go with it")
+
+  -- A remount with no craft file at all is a no-op rather than a crash: the
+  -- event fires on every computer, including one that has not been set up.
+  hull.reset()
+  local okEmpty, changedEmpty = pcall(hull.remount)
+  check(okEmpty and changedEmpty == false,
+        "an unconfigured computer remounts to nothing, quietly")
+
   _G.peripheral = realPeripheral
 end
 

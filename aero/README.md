@@ -209,6 +209,25 @@ can, and puts the answer on the second line of the screen with the header in red
 > does that, and `setup` reports the mistake in existing files. Re-run `probe` on
 > an assembled ship, or delete the `nav = false` line by hand.
 
+### Assembling the ship after starting the pilot
+
+The second cause in that list used to be permanent, and it was the commonest of
+the four.
+
+Assembling a Create Aeronautics contraption **attaches every peripheral on it**;
+taking it apart detaches them all. The pilot used to resolve its hardware once at
+boot and keep that answer for the life of the computer — so turning the flight
+computer on and *then* assembling the ship, which is the ordinary order of
+operations, left it reporting that it could not find the navigation table while
+the table sat plainly on the hull. Rebooting fixed it, which made it look like an
+intermittent fault rather than a rule.
+
+The tell was that `setup` and `configure` could see hardware the pilot could not:
+both have always rescanned on attach and detach. The pilot now does the same, and
+logs a `hardware` event when the set of instruments actually changes. Assembly
+order no longer matters, and neither does taking a ship apart and putting it back
+together with the computer left running.
+
 ## The hull: `/craft.cfg`
 
 The installer deliberately does not write one. Which bearing holds the ship up
@@ -417,10 +436,30 @@ is refused with a reason — they want opposite ranges, so whichever is written
 last wins and the other guard spends the flight reading a number that means
 something else entirely.
 
-The `ground` sensor is asked to look **128 blocks** down, not just far enough for
-the guard. The same reading is the ship's height above ground in the cockpit and
-the sample every terrain survey is built from — at sixteen blocks it saw nothing
-at cruise altitude, so the map stayed empty and nothing said why.
+The `ground` sensor is *asked* to look **128 blocks** down, not just far enough
+for the guard. The same reading is the ship's height above ground in the cockpit
+and the sample every terrain survey is built from — at sixteen blocks it saw
+nothing at cruise altitude, so the map stayed empty and nothing said why.
+
+Asked, not told. **The maximum range is set on the sensor block itself**, and the
+mod raises a Lua error rather than clamping when a program asks for more than
+that. So the flight computer negotiates: if the block already sees far enough it
+writes nothing at all, otherwise it asks and keeps halving until something is
+accepted, and if the block refuses everything its own setting stands. A refused
+range is not a fault — the sensor works, it has a limit — but a `ground` sensor
+that ends up under 32 blocks is called out on the ship panel, because a blank
+clearance reads exactly like flat ground a long way down.
+
+To see what a sensor actually reports, including which calls fail:
+
+```
+probe --eyes
+```
+
+It lists every optical sensor with its range, `hasHit`, distance and block, live,
+and says which role `/craft.cfg` gives each one — because knowing a sensor works
+is only half the question, and the other half is whether the program is asking
+the one it thinks it is.
 | `dock` | `docking_connector` | what the ship is docked to |
 | `stick` | `analogue_joystick` | the pilot's hands |
 | `link` | `advanced_data_link` | publishes where the ship is going |
@@ -908,26 +947,48 @@ Also in the game, as `guide` → *When it goes wrong*.
 | An order is refused, naming somebody | They have control. `TAKE control` on the ship's panel, or wait 90s for it to lapse. |
 | Altitude order refused on a parked ship | It has no altitude to move *from* and none was given. Send an absolute altitude, or check it has an altitude sensor. |
 | Terrain guard fires in clear air | The `ground` sensor is the forward-facing one. `configure` → Instruments, or swap them in `/craft.cfg`. |
-| Cockpit shows `clear --` at altitude | Old config with a short sensor range, or no `ground` sensor. Re-run `probe`, or `configure`. |
+| Cockpit shows `clear --` at altitude | The ground sensor cannot see that far. `probe --eyes` shows its range. The maximum is set on the sensor block itself, and the flight computer cannot raise it past that — it asks, and takes what it is given. |
+| Ship says it cannot find the `navigation_table` | Almost always the pilot was started before the contraption was assembled. Fixed as of this version: the pilot now re-resolves its hardware whenever a peripheral attaches. If it persists, `probe --eyes` and `configure` → Instruments. |
+| An instrument works in `setup` but not in `pilot` | Same cause, and this was the tell: `setup` and `configure` have always rescanned on attach, so they could see hardware the flying program had never resolved. |
 | Nothing is ever surveyed | Same cause: surveying is built from the ground reading, so a ship that cannot see the ground records nothing. |
 | A control shows **FAULT** on the ship panel | That peripheral is not answering. It has been broken off, or renamed, or was never on the contraption. |
 
 ## Tests
 
 There is no Create Aeronautics outside the game, so the modules run against a
-mock hull under [CraftOS-PC](https://www.craftos-pc.cc/). Copy the tree to a
-computer directory and run:
+mock hull in an emulator. Either of two work.
+
+**[CCEmuX](https://emux.cc/getting-started.html)** boots a computer whose root is
+a directory, and runs that computer's `startup.lua`. This tree already has a real
+`startup.lua` — it picks the pilot, the tower or the pocket by hardware and then
+flies a ship — so copy the tree somewhere scratch and put the test shim in as the
+startup:
+
+```
+cp -r aero/* /tmp/run/
+cp /tmp/run/test/ccemux.lua /tmp/run/startup.lua
+java -jar ccemux-launcher.jar -r TRoR -c /tmp/run
+```
+
+`-r TRoR` is the renderer that does not want a window. The shim calls
+`os.shutdown()` at the end, without which the emulator sits at a shell prompt
+forever and a finished suite looks exactly like a hung one.
+
+**[CraftOS-PC](https://www.craftos-pc.cc/)** takes the runner directly:
 
 ```
 CraftOS-PC --headless -d <datadir> --script <abs path>/test/run.lua
 ```
 
 `--script` takes a **host** path, not a path inside the emulated filesystem.
-Results are written to `/test-summary.txt` and `/test-*-results.txt` on the
-emulated computer rather than stdout, because headless mode redraws the entire
-terminal on every update.
 
-952 assertions. `spec.lua` covers each module on its own — the heading
+Under either, results are written to `/test-summary.txt` and
+`/test-*-results.txt` on the emulated computer rather than stdout, because
+headless mode redraws the entire terminal on every update — and because an
+uncaught error drops the emulator into its shell, where a crash and a hang look
+identical from outside.
+
+974 assertions. `spec.lua` covers each module on its own — the heading
 arithmetic and the wrap, plans and legs, sensor fusion and the ageing of a
 dead-reckoned fix, the PID loops and the integral clamp, every flight state and
 all four guards, the hull abstraction over a mock of the real peripheral API, the
