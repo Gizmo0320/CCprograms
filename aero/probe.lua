@@ -192,7 +192,10 @@ local ROLES = {
   { "alt",    "altitude_sensor" },
   { "vel",    "velocity_sensor" },
   { "gimbal", "gimbal_sensor" },
+  -- Both optical roles, handled specially below: they are the same block and
+  -- only the person who mounted them knows which way each one points.
   { "ground", "optical_sensor" },
+  { "forward", "optical_sensor" },
   { "dock",   "docking_connector" },
   { "stick",  "analogue_joystick" },
   { "link",   "advanced_data_link" },
@@ -203,8 +206,18 @@ local ROLES = {
 }
 
 local instrumentLines = {}
+local eyes = found.optical_sensor or {}
+
 for _, role in ipairs(ROLES) do
   local side = first(role[2])
+
+  -- The optical sensors are the lift-and-main problem again in miniature. Two
+  -- of them are indistinguishable by type, so the first is guessed as the
+  -- downward one and the second as the forward one -- which is the commonest
+  -- arrangement, is still a guess, and is said out loud below.
+  if role[1] == "ground" then side = eyes[1] end
+  if role[1] == "forward" then side = eyes[2] end
+
   if side then
     instrumentLines[#instrumentLines + 1] = ("    %s = %q,"):format(role[1], side)
   else
@@ -228,6 +241,18 @@ if not first("navigation_table") then
   notes[#notes + 1] = "There is no navigation table. Without one this ship can"
   notes[#notes + 1] = "hold altitude but cannot navigate to anything."
 end
+if #eyes >= 2 then
+  notes[#notes + 1] = ("%d optical sensors. The first is assumed to point DOWN"):format(#eyes)
+  notes[#notes + 1] = "and the second FORWARD. Check which is which -- a"
+  notes[#notes + 1] = "forward sensor read as the ground makes the terrain"
+  notes[#notes + 1] = "guard fire at a hillside it is not under yet."
+elseif #eyes == 1 then
+  notes[#notes + 1] = "One optical sensor, assumed to point DOWN for ground"
+  notes[#notes + 1] = "clearance. A second one pointing forward gives the"
+  notes[#notes + 1] = "obstacle guard, which is the only thing that sees a"
+  notes[#notes + 1] = "cliff face coming."
+end
+
 if first("gimbal_sensor") then
   notes[#notes + 1] = "A gimbal sensor peripheral was found, so tilt is read"
   notes[#notes + 1] = "directly and there is no need to wire it as redstone."

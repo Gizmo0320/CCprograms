@@ -326,11 +326,23 @@ ground
 forward
   optical sensor pointing
   AHEAD. The obstacle
-  guard's. Never guessed
-  at: two sensors look
-  identical, so name both
-  or the wrong one gets
-  picked.
+  guard's.
+
+  The two optical roles
+  are the same block, so
+  only you know which
+  way each points. probe
+  assumes the first is
+  down and the second is
+  forward. Check it in
+  configure.
+
+  Naming one sensor as
+  both is refused: they
+  want opposite ranges,
+  so one guard would
+  read a number that
+  means something else.
 gimbal
   gimbal sensor. Pitch
   and roll as real

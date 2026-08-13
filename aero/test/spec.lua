@@ -1957,6 +1957,123 @@ do
 end
 
 --------------------------------------------------------------------------------
+section("hull: the two optical sensors")
+--------------------------------------------------------------------------------
+
+-- `ground` looks down and `forward` looks ahead, and they are the same kind of
+-- block. Getting them confused is silent and ruins both guards, so this is the
+-- pair of failures that needs pinning down hardest.
+do
+  local mock   = require("test.mockperipheral")
+  local hull   = require("lib.hull")
+  local config = require("lib.config")
+
+  local function two()
+    local w = mock.new{}
+    w.navTable("nav0")
+    w.altimeter("alt0")
+    w.optical("optical_sensor_0", { range = 16 })
+    w.optical("optical_sensor_1", { range = 16 })
+    _G.peripheral = w.api
+    return w
+  end
+
+  local function craft(instruments)
+    return { controls = {}, mix = {}, instruments = instruments,
+             limits = { clearance = 8, cruise = 12 } }
+  end
+
+  -- The bug. One sensor named as `forward`, `ground` left to be found -- and
+  -- auto-find took the very same block, so one sensor was both eyes.
+  local w = two()
+  hull.define(craft({ nav = "nav0", alt = "alt0",
+                      forward = "optical_sensor_0" }))
+
+  check(hull.instruments.forward.side == "optical_sensor_0",
+        "a named forward sensor keeps the block it was given",
+        hull.instruments.forward.side)
+  check(hull.instruments.ground == nil
+        or hull.instruments.ground.side ~= "optical_sensor_0",
+        "and auto-find does not take it for the ground as well",
+        hull.instruments.ground and hull.instruments.ground.side)
+  check(hull.instruments.ground and hull.instruments.ground.side
+        == "optical_sensor_1",
+        "it takes the other one", hull.instruments.ground
+        and hull.instruments.ground.side)
+
+  -- Named both ways round, which is the arrangement somebody arrives at after
+  -- discovering the guards were backwards.
+  w = two()
+  hull.define(craft({ nav = "nav0", alt = "alt0",
+                      ground = "optical_sensor_1",
+                      forward = "optical_sensor_0" }))
+  check(hull.instruments.ground.side == "optical_sensor_1"
+        and hull.instruments.forward.side == "optical_sensor_0",
+        "naming both is obeyed exactly")
+
+  -- Deliberately the same block: a mistake, and a loud one. The two roles want
+  -- opposite ranges, so whichever claim() writes last wins and the other guard
+  -- spends the flight reading a number that means something else.
+  w = two()
+  local _, problems = hull.define(craft({ nav = "nav0", alt = "alt0",
+                                          ground = "optical_sensor_0",
+                                          forward = "optical_sensor_0" }))
+  local said = false
+  for _, why in ipairs(problems or {}) do
+    if tostring(why):find("cannot look down and ahead", 1, true) then said = true end
+  end
+  check(said, "one sensor cannot be both eyes, and it says so",
+        problems and problems[1])
+  check(hull.instruments.forward == nil,
+        "and the ambiguous one is dropped rather than driven wrong")
+
+  -- Role order is fixed, not hash order, so two computers reading one craft
+  -- file cannot disagree about which role got first pick.
+  local first = nil
+  for _ = 1, 5 do
+    w = two()
+    hull.define(craft({ nav = "nav0", alt = "alt0" }))
+    local got = hull.instruments.ground and hull.instruments.ground.side
+    first = first or got
+    checkQuiet(got == first, "stable across loads")
+  end
+  check(first ~= nil, "auto-find is deterministic across reloads", first)
+
+  ------------------------------------------------------------------------------
+  -- The range. The other half of the same bug, and the quieter one.
+
+  w = two()
+  hull.define(craft({ nav = "nav0", alt = "alt0",
+                      ground = "optical_sensor_0",
+                      forward = "optical_sensor_1" }))
+  hull.claim()
+
+  local groundRange = w.device("optical_sensor_0").range
+  check(groundRange >= config.groundRange,
+        "the ground sensor is asked to look a long way down", groundRange)
+
+  -- Why it matters, demonstrated rather than asserted in the abstract: a ship at
+  -- cruise over ordinary ground. With the old sixteen-block range this read
+  -- nothing at all, so the cockpit showed no height above ground and the terrain
+  -- survey -- which is built from exactly this number -- never got a sample.
+  w.ship.x, w.ship.y, w.ship.z = 0, 120, 0     -- terrain is 64 by default
+  local raw = hull.read(1)
+  check(raw.clearance ~= nil,
+        "so a ship at cruise altitude still knows its height above ground",
+        raw.clearance)
+  check(near(raw.clearance, 56), "and knows it correctly", raw.clearance)
+
+  -- The forward sensor is scaled to stopping distance instead, which is a
+  -- different question with a different answer.
+  local forwardRange = w.device("optical_sensor_1").range
+  check(forwardRange >= 12 * config.reaction,
+        "the forward sensor is scaled to how far the ship takes to stop",
+        forwardRange)
+
+  _G.peripheral = realPeripheral
+end
+
+--------------------------------------------------------------------------------
 section("hull: redstone")
 --------------------------------------------------------------------------------
 

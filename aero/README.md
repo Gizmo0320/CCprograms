@@ -404,6 +404,23 @@ to say "this hull has none, stop looking and stop warning".
 | `gimbal` | `gimbal_sensor` | pitch and roll, as real angles |
 | `ground` | `optical_sensor` | clearance below. No sensor means no terrain guard |
 | `forward` | `optical_sensor` | what is ahead. No sensor means no obstacle guard |
+
+**The two optical sensors are the same block**, so only you know which way each
+one points. `probe` assumes the first points down and the second forward — the
+commonest arrangement, and still a guess. Check it, in `configure` →
+**Instruments** or in the file.
+
+Three rules keep them apart. A sensor named for one role is never auto-found for
+the other. Roles resolve in a fixed order, so two computers reading one craft
+file cannot disagree about which got first pick. And naming *one* sensor as both
+is refused with a reason — they want opposite ranges, so whichever is written
+last wins and the other guard spends the flight reading a number that means
+something else entirely.
+
+The `ground` sensor is asked to look **128 blocks** down, not just far enough for
+the guard. The same reading is the ship's height above ground in the cockpit and
+the sample every terrain survey is built from — at sixteen blocks it saw nothing
+at cruise altitude, so the map stayed empty and nothing said why.
 | `dock` | `docking_connector` | what the ship is docked to |
 | `stick` | `analogue_joystick` | the pilot's hands |
 | `link` | `advanced_data_link` | publishes where the ship is going |
@@ -890,6 +907,9 @@ Also in the game, as `guide` → *When it goes wrong*.
 | `update` refused | The ship is airborne. Land it first — this is deliberate. |
 | An order is refused, naming somebody | They have control. `TAKE control` on the ship's panel, or wait 90s for it to lapse. |
 | Altitude order refused on a parked ship | It has no altitude to move *from* and none was given. Send an absolute altitude, or check it has an altitude sensor. |
+| Terrain guard fires in clear air | The `ground` sensor is the forward-facing one. `configure` → Instruments, or swap them in `/craft.cfg`. |
+| Cockpit shows `clear --` at altitude | Old config with a short sensor range, or no `ground` sensor. Re-run `probe`, or `configure`. |
+| Nothing is ever surveyed | Same cause: surveying is built from the ground reading, so a ship that cannot see the ground records nothing. |
 | A control shows **FAULT** on the ship panel | That peripheral is not answering. It has been broken off, or renamed, or was never on the contraption. |
 
 ## Tests
@@ -907,7 +927,7 @@ Results are written to `/test-summary.txt` and `/test-*-results.txt` on the
 emulated computer rather than stdout, because headless mode redraws the entire
 terminal on every update.
 
-936 assertions. `spec.lua` covers each module on its own — the heading
+952 assertions. `spec.lua` covers each module on its own — the heading
 arithmetic and the wrap, plans and legs, sensor fusion and the ageing of a
 dead-reckoned fix, the PID loops and the integral clamp, every flight state and
 all four guards, the hull abstraction over a mock of the real peripheral API, the

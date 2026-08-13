@@ -248,6 +248,15 @@ config.spinLimit = 90
 -- Obstacles
 --------------------------------------------------------------------------------
 
+-- How far down the ground sensor is asked to look (blocks).
+--
+-- Generous on purpose. The terrain guard only cares about the last few blocks,
+-- but the same reading is the ship's height above ground on the cockpit *and*
+-- the sample every terrain survey is built from -- and a sensor that only
+-- reaches sixteen blocks reports nothing at all at cruise altitude, which is
+-- where ships spend almost all of their time.
+config.groundRange = 128
+
 -- How many seconds of travel to keep clear of whatever is in front (seconds).
 --
 -- Deliberately generous, and it was two to begin with. **A ship has no brakes.**

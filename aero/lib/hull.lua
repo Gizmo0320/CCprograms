@@ -314,13 +314,19 @@ end
 --- guesses a starting /craft.cfg, and how an instrument with no side named finds
 --- itself anyway -- most hulls have exactly one altitude sensor and making
 --- someone write that down is friction for nothing.
-function hull.find(types)
+function hull.find(types, taken)
   local ok, names = pcall(peripheral.getNames)
   if not ok then return nil end
 
   for _, side in ipairs(names) do
     local okType, kind = pcall(peripheral.getType, side)
-    if okType and types[kind] then return side, kind end
+    -- `taken` is what other roles have already claimed. Without it, a hull with
+    -- one optical sensor named as `forward` had `ground` auto-find the very same
+    -- block: both roles pointed at one sensor, claim() set its range twice, and
+    -- the distance to a hillside ahead was read as the height above the ground.
+    if okType and types[kind] and not (taken and taken[side]) then
+      return side, kind
+    end
   end
   return nil
 end
@@ -595,7 +601,25 @@ function hull.define(craft, path)
 
   local named = type(craft.instruments) == "table" and craft.instruments or {}
 
-  for role, types in pairs(ROLES) do
+  -- Named roles are resolved before any auto-finding, and in a fixed order.
+  --
+  -- Both halves matter. `pairs` is hash order, so which role got first pick of
+  -- an ambiguous peripheral varied between computers reading the same file. And
+  -- auto-finding before the named roles had been read let a guess take the very
+  -- block somebody had explicitly asked for by name.
+  local ORDER = { "nav", "alt", "vel", "gimbal", "ground", "forward", "dock",
+                  "stick", "link", "homing", "range", "plate", "swivel" }
+
+  local claimed = {}
+  for _, role in ipairs(ORDER) do
+    local side = named[role]
+    if type(side) == "string" and peripheral.isPresent(side) then
+      claimed[side] = role
+    end
+  end
+
+  for _, role in ipairs(ORDER) do
+    local types = ROLES[role]
     local side = named[role]
 
     if side == false then
@@ -627,16 +651,29 @@ function hull.define(craft, path)
       side = nil
 
     else
-      side = hull.find(types)
+      side = hull.find(types, claimed)
     end
 
     if side then
+      claimed[side] = role
       hull.instruments[role] = {
         role = role,
         side = side,
         kind = select(2, pcall(peripheral.getType, side)),
       }
     end
+  end
+
+  -- One sensor cannot be both eyes. If a craft file says so it is a mistake, and
+  -- a loud one: the two roles want opposite ranges, so whichever is written last
+  -- wins and the other guard spends the flight reading a number that means
+  -- something else entirely.
+  if hull.instruments.ground and hull.instruments.forward
+     and hull.instruments.ground.side == hull.instruments.forward.side then
+    hull.problems[#hull.problems + 1] =
+      "ground and forward are both " .. hull.instruments.ground.side
+      .. " -- one sensor cannot look down and ahead at once"
+    hull.instruments.forward = nil
   end
 
   -- ...and the same trap from the other end. One sensor auto-found as `ground`
@@ -764,9 +801,20 @@ function hull.claim()
   -- The optical sensor is the terrain guard's only eye, and its default range is
   -- shorter than the clearance we want to keep. Asking for twice the limit means
   -- the guard sees the ground coming rather than arriving.
+  -- Far enough to see the ground from cruise altitude, not just far enough for
+  -- the guard.
+  --
+  -- It used to ask for twice the clearance limit -- sixteen blocks on a typical
+  -- hull -- which is plenty of warning and useless for everything else. A ship
+  -- at a hundred and twenty over ground at sixty-four saw nothing at all, so
+  -- `clearance` was nil for the whole flight: the cockpit showed no height above
+  -- ground, and **the survey never recorded a single sample**, because a ground
+  -- reading is exactly what it is built from. The height map stayed empty and
+  -- nobody could see why.
   local ground = hull.instruments.ground
   if ground then
-    local want = (hull.limits.clearance or config.clearance) * 2
+    local want = math.max(config.groundRange,
+                          (hull.limits.clearance or config.clearance) * 2)
     call("ground", ground.side, "setRange", math.floor(want))
   end
 
