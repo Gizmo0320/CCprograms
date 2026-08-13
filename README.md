@@ -6,7 +6,7 @@ ComputerCraft: Tweaked programs.
 | --- | --- |
 | [`mining/`](mining/) | A mining turtle fleet: turtles that quarry, branch mine and follow ore veins, a base server that queues and dispatches work, a pocket computer to deploy from, and geo scanner scouts that find seams for the miners to take. |
 | [`redstone/`](redstone/) | A redstone control network: named ports over sides and bundled cable, rules and logic blocks each node runs for itself, scenes that switch a lot of things at once, a base server holding the log, and a pocket computer to do it by hand. |
-| [`aero/`](aero/) | A flight network for Create Aeronautics: ships that hold altitude and heading for themselves, fly between named waypoints and land or dock at the end, a base tower holding the waypoints and a map, and a pocket computer to send them places. |
+| [`aero/`](aero/) | A flight network for Create Aeronautics: ships that hold altitude and heading for themselves, fly between named waypoints and land or dock at the end, a base tower holding the waypoints and a map, beacons that stand in the world being waypoints, and a pocket computer to send them places. Ships survey the ground as they fly, so a route flown once is a route the next flight knows the height of. |
 
 ## mining
 
@@ -49,7 +49,7 @@ directory brings its own mock and runs the real modules against it — 535
 assertions for the mining fleet covering traversal, the fuel and inventory
 guards, crash resume, fleet dispatch, the pocket UI and the scanning pipeline;
 591 for the redstone network covering ports, rules, logic blocks, scenes, all
-three programs' event loops and the installer; and 850 for the flight network
+three programs' event loops and the installer; and 854 for the flight network
 covering the navigation arithmetic, sensor fusion and dead reckoning, the control
 laws, all four flight guards, the three programs and the installer — plus a
 flight model the autopilot is flown against for a few hundred sweeps at a time,

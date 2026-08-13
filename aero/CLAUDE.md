@@ -85,8 +85,9 @@ whose effect on a hull in flight this program cannot guess at, and
 `linked_typewriter` (`getPressedKeyCodes`, and it attaches to the computer) is a
 cockpit keyboard — a manual flying mode, which is a different program.
 
-The two linked receivers are a homing beacon between them, and are **reported
-but never navigated on**: `getAngleToClosestLink` is an angle, and nothing
+The two linked receivers give a homing fix between them -- role `homing`, not
+`beacon`, because `beacon.lua` is an entirely different thing -- and are
+**reported but never navigated on**: `getAngleToClosestLink` is an angle, and nothing
 available outside the game says whether it is measured from world north or from
 the receiver's own facing. Those differ by the ship's heading, which is precisely
 the error that would send a ship past its pad. It goes in the telemetry frame so

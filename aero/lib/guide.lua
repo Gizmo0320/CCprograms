@@ -29,8 +29,10 @@ guide.topics = {
 A flight network for
 Create Aeronautics ships.
 
-Three programs, one
-install:
+Four programs, one
+install. Each computer
+picks its own from the
+role you gave it:
 
  pilot  rides the ship
         and flies it
@@ -40,6 +42,8 @@ install:
         log and a map
  remote an advanced
         pocket computer
+ beacon stands still and
+        is a waypoint
 
 Every ship flies itself.
 The tower and the pocket
@@ -198,6 +202,83 @@ wired modem network.
 mode is digital, analog
 or bundled. A bundled
 wire needs a colour.
+]] },
+
+{ title = "Instruments", body = [[
+All of these are found by
+themselves. Name one in
+/craft.cfg only when you
+have two, or set it to
+false to say this hull
+has none and stop the
+warning.
+
+nav
+  navigation table.
+  Position and heading.
+  Without it a ship can
+  hover but not navigate.
+alt
+  altitude sensor.
+  Without it AND nav, the
+  pilot hands the hull
+  back rather than fly it
+  down.
+ground
+  optical sensor pointing
+  DOWN. The terrain
+  guard's only eye.
+forward
+  optical sensor pointing
+  AHEAD. The obstacle
+  guard's. Never guessed
+  at: two sensors look
+  identical, so name both
+  or the wrong one gets
+  picked.
+gimbal
+  gimbal sensor. Pitch
+  and roll as real
+  angles.
+vel
+  velocity sensor.
+stick
+  analogue joystick.
+  Touching it takes
+  control off the
+  autopilot.
+dock
+  docking connector.
+link
+  advanced data link. The
+  pilot publishes the
+  current leg to it, so
+  gyros and guided
+  bearings on the hull
+  aim where the autopilot
+  is going.
+homing
+  directional link:
+  bearing to the nearest
+  matching link.
+range
+  modulating link: its
+  distance.
+plate
+  nameplate. Renaming a
+  ship writes it, so the
+  name is readable from
+  outside.
+swivel
+  swivel bearing's target
+  angle.
+
+CC: Sable, if installed,
+beats all of them for
+position, velocity and
+attitude, and is the only
+thing that can measure a
+ship spinning.
 ]] },
 
 { title = "Balloons", body = [[
@@ -690,12 +771,15 @@ these, so yours survive:
    and its log
  /aero.survey.txt
    what probe last saw
+ /beacon.state
+   a beacon's own kind
 
 Programs:
 
  pilot   fly this ship
  server  the tower
  remote  the pocket
+ beacon  be a waypoint
  probe   survey the hull
  guide   this
  update  fetch the

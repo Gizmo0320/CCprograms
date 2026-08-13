@@ -196,7 +196,7 @@ local ROLES = {
   { "dock",   "docking_connector" },
   { "stick",  "analogue_joystick" },
   { "link",   "advanced_data_link" },
-  { "beacon", "directional_link" },
+  { "homing", "directional_link" },
   { "range",  "modulating_link" },
   { "plate",  "name_plate" },
   { "swivel", "swivel_bearing" },

@@ -1757,18 +1757,18 @@ do
   check(ok, "a hull with every instrument and no instrument block loads clean")
 
   for _, role in ipairs({ "nav", "alt", "vel", "gimbal", "ground", "dock",
-                          "beacon", "range", "plate", "swivel" }) do
+                          "homing", "range", "plate", "swivel" }) do
     checkQuiet(hull.instruments[role] ~= nil, "found " .. role, role)
   end
-  check(hull.instruments.beacon ~= nil and hull.instruments.range ~= nil,
+  check(hull.instruments.homing ~= nil and hull.instruments.range ~= nil,
         "the two linked receivers are found by their real type names")
   check(hull.instruments.plate ~= nil, "and so is the nameplate")
 
   local raw = hull.read(1)
-  check(raw.beacon == 135, "a directional link gives a bearing to the nearest link",
-        raw.beacon)
-  check(raw.beaconRange == 42.5, "and a modulating one gives the range",
-        raw.beaconRange)
+  check(raw.homing == 135, "a directional link gives a bearing to the nearest link",
+        raw.homing)
+  check(raw.homingRange == 42.5, "and a modulating one gives the range",
+        raw.homingRange)
   check(raw.swivel == 12, "a swivel bearing reports where it is pointing", raw.swivel)
 
   -- The nameplate is a name, not a reading, so it is not in the sweep.

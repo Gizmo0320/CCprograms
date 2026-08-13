@@ -203,8 +203,13 @@ local ROLES = {
   link   = { advanced_data_link = true },
 
   -- A linked receiver pair, which between them give bearing and distance to the
-  -- nearest matching link: a homing beacon. Reported, not flown on -- see `read`.
-  beacon = { directional_link = true },
+  -- nearest matching link: a homing fix. Reported, not flown on -- see `read`.
+  --
+  -- Called `homing` and not `beacon`, because beacon.lua is a different
+  -- thing entirely -- a computer standing in the world being a waypoint --
+  -- and one word for two of them is a confusing bug report waiting to be
+  -- written.
+  homing = { directional_link = true },
   range  = { modulating_link = true },
 
   -- The ship's name on a physical block, so it is readable from outside as well
@@ -1064,7 +1069,7 @@ function hull.read(now)
     if type(docked) == "string" and docked ~= "" then raw.docked = docked end
   end
 
-  -- The homing beacon: bearing from a directional link, range from a modulating
+  -- Homing: bearing from a directional link, range from a modulating
   -- one. Both are relative to the nearest matching link rather than to anywhere
   -- in the world.
   --
@@ -1075,11 +1080,11 @@ function hull.read(now)
   -- confidently past its pad -- so it goes in the telemetry frame, where you can
   -- watch it against a known bearing and find out, and nothing steers on it
   -- until someone has.
-  if inst.beacon then
-    raw.beacon = tonumber((call("beacon", inst.beacon.side, "getClosestAngle")))
+  if inst.homing then
+    raw.homing = tonumber((call("homing", inst.homing.side, "getClosestAngle")))
   end
   if inst.range then
-    raw.beaconRange = tonumber((call("range", inst.range.side, "getClosestDistance")))
+    raw.homingRange = tonumber((call("range", inst.range.side, "getClosestDistance")))
   end
 
   if inst.swivel then

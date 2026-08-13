@@ -5,7 +5,8 @@ land or dock when they get there, and tell a base dashboard and a pocket compute
 what they are doing on the way — for Create Aeronautics contraptions, driven
 through **Create Aeronautics: Gadgets & Gizmos**.
 
-Three programs, one install:
+Four programs, one install. Every computer gets the whole tree and runs the one
+its role says:
 
 | Program | Runs on | What it does |
 | --- | --- | --- |
@@ -37,6 +38,9 @@ allowed to depend on the link.
 - A **navigation table** on the hull, or the ship can hold altitude but cannot
   navigate. An **altitude sensor** and an **optical sensor** pointing down are
   both strongly wanted; see Guards.
+- **Beacons are optional.** A waypoint tapped in from the pocket works; a beacon
+  is a computer that stands there being one, and measures what is above it. See
+  *Waypoint computers*.
 - **[CC: Sable](https://techtastic.github.io/CC-Sable/)** is optional and worth
   having. It exposes the physics object itself — real velocity, real
   orientation, angular velocity, mass — which is strictly better than any sensor
@@ -51,14 +55,16 @@ On every computer — pilot, tower and pocket alike:
 wget run https://raw.githubusercontent.com/Gizmo0320/CCprograms/main/aero/install.lua
 ```
 
-It asks four things: the network name, the modem channel, whether this is a pilot
-or the tower, and a name for this computer. A pocket computer is always the
-remote and is not asked.
+It asks four things: the network name, the modem channel, whether this is a
+**pilot**, the **tower** or a **beacon**, and a name for this computer. A pocket
+computer is always the remote and is not asked.
 
 Unattended:
 
 ```
-install --net=north --channel=4300 --role=pilot --name=Kestrel
+install --net=north --channel=4300 --role=pilot  --name=Kestrel
+install --net=north --channel=4300 --role=server --name=Tower
+install --net=north --channel=4300 --role=beacon --name=quarry-pad
 ```
 
 To update later, on any computer: `update`, or `update --check` to see what
@@ -120,6 +126,17 @@ needs somewhere to divert to.
 **8. Fly it.** **fly** tab: set an altitude well clear of anything, tap the
 waypoint, tap `FLY IT`. Watch it on the pocket, and keep a hand near the
 joystick — touching it takes control back instantly.
+
+The route will say **not surveyed**, because nobody has been that way. That is
+expected on a first flight and is why step 8 says *well clear of anything*: the
+guards are all the ship has until something has measured the ground. Fly it once
+and the tower remembers; the next plan over the same ground will tell you what it
+needs before you take off.
+
+**9. Optional, later.** Put a computer at the far pad, install it with
+`--role=beacon`, and give it an optical sensor pointing up. It registers itself
+as a waypoint and reports how high the trees or roof above it reach, so routes
+through it get planned over them.
 
 ## The hull: `/craft.cfg`
 
@@ -319,7 +336,7 @@ to say "this hull has none, stop looking and stop warning".
 | `dock` | `docking_connector` | what the ship is docked to |
 | `stick` | `analogue_joystick` | the pilot's hands |
 | `link` | `advanced_data_link` | publishes where the ship is going |
-| `beacon` | `directional_link` | bearing to the nearest matching link |
+| `homing` | `directional_link` | bearing to the nearest matching link |
 | `range` | `modulating_link` | distance to the nearest matching link |
 | `plate` | `name_plate` | the ship's name, on a block you can read from outside |
 | `swivel` | `swivel_bearing` | where a swivel bearing is pointing |
@@ -334,8 +351,10 @@ that link aim at the same place the autopilot is flying to, rather than at
 whatever was last set by hand. A hull without one is the common case and nothing
 depends on it.
 
-The two **linked receivers** together are a homing beacon: bearing and range to
-the nearest matching link. They are reported in the telemetry and nothing steers
+The two **linked receivers** together give a homing fix: bearing and range to the
+nearest matching link. The role is `homing` rather than `beacon`, because
+`beacon.lua` is a different thing entirely and one word for both would be a
+confusing bug report waiting to happen. They are reported in the telemetry and nothing steers
 on them, deliberately — `getClosestAngle` is an angle, and I have not been able
 to confirm whether it is measured from world north or from the receiver's own
 facing. Those differ by the ship's heading, which is exactly the error that sends
@@ -422,11 +441,11 @@ Terms **add**, so two bearings can share the lift:
 
 ## The screens
 
-Three programs, one look. Colour means the same thing on all of them — a state
+Four programs, one look. Colour means the same thing on all of them — a state
 that read "loiter" in one colour on the tower and another on the pocket would be
 worse than no colour at all — and everything degrades: to 26x20 on a pocket, and
-to a **basic computer with no colour**, which a ship's flight computer may well
-be.
+to a **basic computer with no colour**, which a ship's flight computer or a
+beacon may well be.
 
 ### The ship
 
@@ -782,7 +801,7 @@ Results are written to `/test-summary.txt` and `/test-*-results.txt` on the
 emulated computer rather than stdout, because headless mode redraws the entire
 terminal on every update.
 
-850 assertions. `spec.lua` covers each module on its own — the heading
+854 assertions. `spec.lua` covers each module on its own — the heading
 arithmetic and the wrap, plans and legs, sensor fusion and the ageing of a
 dead-reckoned fix, the PID loops and the integral clamp, every flight state and
 all four guards, the hull abstraction over a mock of the real peripheral API, the
