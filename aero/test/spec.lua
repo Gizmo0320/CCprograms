@@ -2272,6 +2272,184 @@ do
 end
 
 --------------------------------------------------------------------------------
+section("needs: what a computer must have")
+--------------------------------------------------------------------------------
+
+do
+  local needs = require("lib.needs")
+
+  local function found(list)
+    local out = {}
+    for _, entry in ipairs(list) do
+      if type(entry) == "string" then out[#out + 1] = { type = entry }
+      else out[#out + 1] = entry end
+    end
+    return out
+  end
+
+  check(needs.roles.pilot and needs.roles.server and needs.roles.beacon
+        and needs.roles.remote, "every role has a list of what it needs")
+
+  -- A bare computer: everything required is missing and says so.
+  local rows, summary = needs.check("pilot", {})
+  check(#rows > 0, "a pilot has requirements", #rows)
+  check(summary.required >= 3, "several of them required", summary.required)
+
+  local verdict, mood = needs.verdict(summary, "pilot")
+  check(mood == "bad", "and a bare computer is not ready", verdict)
+
+  -- A wired modem is not a radio, and saying "modem: found" next to silence
+  -- would be the least helpful thing this could do.
+  local wired = needs.check("pilot", found({ { type = "modem", wireless = false } }))
+  local modemRow = nil
+  for _, row in ipairs(wired) do
+    if row.item.kind == "modem" then modemRow = row end
+  end
+  check(modemRow and not modemRow.ok,
+        "a wired modem does not satisfy the wireless one")
+
+  local wireless = needs.check("pilot", found({ { type = "modem", wireless = true } }))
+  for _, row in ipairs(wireless) do
+    if row.item.kind == "modem" then
+      check(row.ok, "and a wireless one does")
+    end
+  end
+
+  -- A hull driving one thruster directly is as valid as one with a bearing.
+  local direct = needs.check("pilot", found({
+    { type = "modem", wireless = true }, "navigation_table", "altitude_sensor",
+    "thruster" }))
+  local drive = nil
+  for _, row in ipairs(direct) do
+    if row.item.kind == "thruster_bearing" then drive = row end
+  end
+  check(drive and drive.ok, "a bare thruster satisfies the need for something "
+        .. "to drive, the same as a bearing")
+
+  -- Two optical sensors is a different answer from one, because the second is
+  -- the whole obstacle guard.
+  local one = needs.check("pilot", found({ "optical_sensor" }))
+  local two = needs.check("pilot", found({ "optical_sensor", "optical_sensor" }))
+  local function opticalOk(rows_)
+    for _, row in ipairs(rows_) do
+      if row.item.kind == "optical_sensor" then return row.ok, row.have end
+    end
+  end
+  check(select(1, opticalOk(one)) == false, "one optical sensor is not enough")
+  check(select(1, opticalOk(two)) == true, "two are")
+
+  -- A complete pilot.
+  local _, full = needs.check("pilot", found({
+    { type = "modem", wireless = true },
+    "navigation_table", "altitude_sensor", "thruster_bearing",
+    "optical_sensor", "optical_sensor", "docking_connector",
+    "gimbal_sensor", "analogue_joystick" }))
+  check(full.required == 0, "a fully equipped pilot needs nothing",
+        full.required)
+  check(select(2, needs.verdict(full, "pilot")) == "ok", "and says so")
+
+  -- Missing something optional is "ready, but", not "broken".
+  local _, partial = needs.check("pilot", found({
+    { type = "modem", wireless = true },
+    "navigation_table", "altitude_sensor", "thruster_bearing",
+    "optical_sensor", "optical_sensor" }))
+  check(partial.required == 0 and partial.missing > 0,
+        "missing only optional things is not a failure")
+  check(select(2, needs.verdict(partial, "pilot")) == "warn",
+        "and reads as a suggestion rather than an error")
+
+  -- The other roles are far simpler, and a pocket computer needs one thing.
+  local _, pocketSummary = needs.check("remote",
+    found({ { type = "modem", wireless = true } }))
+  check(pocketSummary.required == 0, "a pocket with a modem is ready")
+
+  local _, unknown = needs.check("nonsense", {})
+  check(unknown.required == 0, "an unknown role is empty rather than a crash")
+
+  -- Every item has to be able to explain itself, because the whole point is
+  -- that somebody stuck reads this rather than the source.
+  for name, spec in pairs(needs.roles) do
+    checkQuiet(type(spec.title) == "string", name .. " has a title")
+    for _, item in ipairs(spec.items) do
+      checkQuiet(item.what and item.why and item.without,
+                 name .. "/" .. tostring(item.what) .. " explains itself")
+      checkQuiet(item.tier == "required" or item.tier == "recommended"
+                 or item.tier == "optional", "a known tier")
+    end
+  end
+  check(true, "every requirement says what it is for and what you lose")
+end
+
+--------------------------------------------------------------------------------
+section("hull: a craft file that switches off attached hardware")
+--------------------------------------------------------------------------------
+
+-- The bug that started this. `probe` wrote `nav = false` for anything not
+-- attached at the moment it ran -- which is the normal state of a contraption
+-- that has not been assembled -- and `false` means "this hull deliberately has
+-- none, stop looking and stop warning". Plug the navigation table in afterwards
+-- and the pilot would never look for it again.
+do
+  local mock = require("test.mockperipheral")
+  local hull = require("lib.hull")
+
+  local w = mock.new{}
+  w.navTable("navigation_table_0")
+  w.altimeter("altitude_sensor_0")
+  _G.peripheral = w.api
+
+  -- Switched off while the hardware is right there.
+  local ok, problems = hull.define({
+    controls = {}, mix = {},
+    instruments = { nav = false, alt = "altitude_sensor_0" },
+  })
+
+  check(hull.instruments.nav == nil, "false still means do not use it")
+
+  local named = false
+  for _, why in ipairs(problems or {}) do
+    if tostring(why):find("attached", 1, true)
+      and tostring(why):find("nav", 1, true) then named = true end
+  end
+  check(named, "but a false with the peripheral attached is called out, "
+        .. "because the hardware is right there and the program refuses to see it",
+        problems and problems[1])
+
+  -- Genuinely absent: still quiet, because a balloon with no optical sensor is
+  -- a design and a warning that is always on screen is one nobody reads.
+  local w2 = mock.new{}
+  w2.navTable("nav0")
+  w2.altimeter("alt0")
+  _G.peripheral = w2.api
+
+  local _, quiet = hull.define({
+    controls = {}, mix = {},
+    instruments = { nav = "nav0", alt = "alt0", ground = false },
+  })
+  local complained = false
+  for _, why in ipairs(quiet or {}) do
+    if tostring(why):find("ground", 1, true) then complained = true end
+  end
+  check(not complained, "and switching off something that is genuinely absent "
+        .. "is still silent")
+
+  -- The message for a missing navigation table has somewhere to go next.
+  local w3 = mock.new{}
+  w3.altimeter("alt0")
+  _G.peripheral = w3.api
+  local _, lost = hull.define({ controls = {}, mix = {},
+                                instruments = { alt = "alt0" } })
+  local helpful = false
+  for _, why in ipairs(lost or {}) do
+    if tostring(why):find("assembled", 1, true)
+      or tostring(why):find("setup", 1, true) then helpful = true end
+  end
+  check(helpful, "and a missing one suggests what to check", lost and lost[1])
+
+  _G.peripheral = realPeripheral
+end
+
+--------------------------------------------------------------------------------
 section("beacon")
 --------------------------------------------------------------------------------
 

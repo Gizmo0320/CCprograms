@@ -302,29 +302,53 @@ say("Named " .. NAME, colours.cyan)
 
 --------------------------------------------------------------------------------
 
-local function hasWirelessModem()
-  for _, side in ipairs(peripheral.getNames()) do
-    if peripheral.getType(side) == "modem" and peripheral.call(side, "isWireless") then
-      return true
-    end
-  end
-  return false
+-- The hardware, checked here rather than described. The installer is the first
+-- and often only time anybody reads what a role needs, and a list of what is
+-- actually missing on this computer beats a paragraph about what one might.
+local needs = nil
+do
+  local ok, module = pcall(dofile, "/lib/needs.lua")
+  if ok then needs = module end
 end
 
 print()
-if not hasWirelessModem() then
-  if ROLE == "pilot" then
-    say("No wireless modem. This ship will still fly its own", colours.orange)
-    say("plan, but nothing can see it or send it anywhere --", colours.orange)
-    say("and it will have no GPS to fall back on.", colours.orange)
-  else
-    say("No wireless modem. This one cannot do anything", colours.orange)
-    say("without one.", colours.orange)
+if needs then
+  local found = {}
+  for _, side in ipairs(peripheral.getNames()) do
+    local entry = { type = peripheral.getType(side) }
+    if entry.type == "modem" then
+      entry.wireless = peripheral.call(side, "isWireless")
+    end
+    found[#found + 1] = entry
   end
-elseif ROLE == "server" then
-  say("An ender modem here is worth it -- range is what", colours.white)
-  say("decides whether you hear about a diversion now or", colours.white)
-  say("when the ship lands.", colours.white)
+
+  local rows, summary = needs.check(ROLE, found)
+  local verdict, mood = needs.verdict(summary, ROLE)
+
+  say("Hardware on this computer:", colours.cyan)
+  for _, row in ipairs(rows) do
+    if row.ok then
+      say(("  yes  %s"):format(row.item.what), colours.lime)
+    elseif row.item.tier == "required" then
+      say(("  NO   %s"):format(row.item.what), colours.red)
+      say(("       %s"):format(row.item.why), colours.white)
+    else
+      say(("  --   %s"):format(row.item.what), colours.lightGrey)
+    end
+  end
+
+  say(verdict, mood == "ok" and colours.lime
+      or (mood == "warn" and colours.orange or colours.red))
+  say("Run `setup` any time to see this again -- it", colours.white)
+  say("re-checks while you watch, so you can go and", colours.white)
+  say("place the missing block.", colours.white)
+
+  if ROLE == "server" then
+    print()
+    say("An ender modem here is worth it: range decides", colours.white)
+    say("whether you hear about a diversion now or when", colours.white)
+    say("the ship lands.", colours.white)
+  end
 end
 
 if ROLE == "beacon" then

@@ -208,11 +208,19 @@ for _, role in ipairs(ROLES) do
   if side then
     instrumentLines[#instrumentLines + 1] = ("    %s = %q,"):format(role[1], side)
   else
-    -- `false` means "this hull has none, stop looking and stop warning". A
-    -- balloon with no optical sensor is a design, not a fault, and a warning
-    -- that is always on screen is one nobody reads.
+    -- **Commented out, not `false`.**
+    --
+    -- `false` in a craft file means "this hull deliberately has none, stop
+    -- looking and stop warning". That is not what a missing peripheral means
+    -- here: it means one was not attached *at the moment probe ran*, which is
+    -- the normal state of a contraption that has not been assembled yet.
+    --
+    -- Writing `false` for it turned a temporary absence into a permanent one.
+    -- Plug the navigation table in afterwards and the pilot would never look
+    -- for it again, because the craft file was now insisting the ship had none.
+    -- Commented out, the role is simply found automatically once it appears.
     instrumentLines[#instrumentLines + 1] =
-      ("    %s = false,   -- no %s attached"):format(role[1], role[2])
+      ("    -- %s = ?,   -- no %s attached when probe ran"):format(role[1], role[2])
   end
 end
 

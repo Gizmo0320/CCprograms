@@ -14,10 +14,12 @@ its role says:
 | `server.lua` | an advanced computer at base | Fleet roster, waypoints, the log, a monitor dashboard and a map |
 | `remote.lua` | an advanced pocket computer | Fleet, fly, nav, log |
 | `beacon.lua` | a computer standing where you want a waypoint | Announces itself as one. No sensors needed |
+| `setup.lua` | any of them | What this computer needs, what it has, and what is wrong |
 
 Plus `probe.lua`, which looks at what is bolted to the hull and writes a
-`/craft.cfg` to start from, and `beacon.lua`, a computer you place in the world
-and give coordinates to, so that it *is* a waypoint.
+`/craft.cfg` to start from; `beacon.lua`, a computer you place in the world and
+give coordinates to, so that it *is* a waypoint; and `setup.lua`, which tells you
+what any computer is missing.
 
 **Every ship is autonomous.** The tower and the pocket set goals; they never fly
 anything. Switch the tower off, break it, let its chunk unload — the ships carry
@@ -97,7 +99,11 @@ the hull, and an optical sensor pointing down.
 an advanced pocket computer — the same one-liner on all three. It asks four
 things; the defaults are fine for a first ship.
 
-**3. Survey the hull.** On the ship's computer:
+**3. Check the hardware.** On the ship's computer, `setup`. Everything marked
+`NO` in red has to be dealt with before the rest of this works. Leave it running
+while you fix them; it re-checks itself.
+
+**4. Survey the hull.** On the ship's computer:
 
 ```
 probe
@@ -106,36 +112,71 @@ probe
 It writes `/craft.cfg` from what it can see, and `/aero.survey.txt` listing
 every peripheral it found.
 
-**4. Check the one guess.** Open `/craft.cfg` and confirm which bearing is
+**5. Check the one guess.** Open `/craft.cfg` and confirm which bearing is
 `lift` and which is `main`. `probe` assumes the first bearing lifts and the
 second pushes; that is the commonest arrangement and still a guess, and getting
 it backwards is a ship that accelerates into the ground.
 
-**5. Tethered test — do not skip this.** Run `pilot` with no flight plan. Check
+**6. Tethered test — do not skip this.** Run `pilot` with no flight plan. Check
 the pocket computer sees the ship. Then press **Ctrl-T**. Every thruster must go
 to zero and back to redstone control (`getControlMode()` reads `"redstone"`).
 Nothing should fly until this passes: it is the difference between a program you
 can stop and one you cannot.
 
-**6. Put down a pad.** Stand where you want it. On the pocket: **nav** tab,
+**7. Put down a pad.** Stand where you want it. On the pocket: **nav** tab,
 `+ pad here`, name it. Tap the name to make it **home** — the bingo-fuel guard
 needs somewhere to divert to.
 
-**7. Put down a second waypoint** somewhere you can see from the pad.
+**8. Put down a second waypoint** somewhere you can see from the pad.
 
-**8. Fly it.** **fly** tab: set an altitude well clear of anything, tap the
+**9. Fly it.** **fly** tab: set an altitude well clear of anything, tap the
 waypoint, tap `FLY IT`. Watch it on the pocket, and keep a hand near the
 joystick — touching it takes control back instantly.
 
 The route will say **not surveyed**, because nobody has been that way. That is
-expected on a first flight and is why step 8 says *well clear of anything*: the
+expected on a first flight and is why step 9 says *well clear of anything*: the
 guards are all the ship has until something has measured the ground. Fly it once
 and the tower remembers; the next plan over the same ground will tell you what it
 needs before you take off.
 
-**9. Optional, later.** Put a computer at the far pad, install it with
+**10. Optional, later.** Put a computer at the far pad, install it with
 `--role=beacon`, and run `beacon` to give it a name and its coordinates. It is
 then a waypoint that is always there, with nobody standing next to it.
+
+## Checking the hardware
+
+```
+setup
+```
+
+Lists everything this computer's role needs, marks what is attached **right
+now**, and says what each thing is for and what you lose without it. It
+re-checks every second, so you can leave it on screen, walk over, place the
+missing block, and watch the line turn green.
+
+`setup pilot` shows another role's list, for planning a build before you have
+made it.
+
+On a flight computer it also reads `/craft.cfg` and reports anything that
+disagrees with the hardware — and that half is the important one, because
+**"it cannot find the navigation table" has four separate causes**:
+
+- the block is not on the contraption
+- the contraption is not assembled, so its blocks are not peripherals yet
+- `/craft.cfg` has the role switched off
+- nothing has run `probe` yet, so there is no `/craft.cfg` at all
+
+A flight computer printing one line of warning cannot tell those apart. `setup`
+can, and puts the answer on the second line of the screen with the header in red.
+
+> **If you have a ship that will not navigate, this is the first thing to run.**
+> Earlier versions of `probe` wrote `nav = false` into `/craft.cfg` for anything
+> that was not attached at the moment it ran — which is the normal state of a
+> contraption that has not been assembled — and `false` means *this hull
+> deliberately has none, stop looking*. Plugging the table in afterwards did not
+> help, because the file was now insisting the ship had none. `probe` no longer
+> does that, and `setup` reports the mistake in existing files. Re-run `probe` on
+> an assembled ship, or delete the `nav = false` line by hand.
 
 ## The hull: `/craft.cfg`
 
@@ -792,7 +833,7 @@ Also in the game, as `guide` → *When it goes wrong*.
 | One ship shows **LOST** | Out of modem range, or its chunk is not loaded. An ender modem on the tower is the fix. |
 | Refuses to take off | `preflight` rejected it and said why in the log: no plan, no cruise altitude, no usable fix, or not enough fuel for the distance. |
 | Hands the hull back the moment it starts | No altitude source. The altitude sensor must be part of the assembled contraption and named in `/craft.cfg`. |
-| Holds height but will not navigate | No navigation table, or it is not on the assembled ship. |
+| Holds height but will not navigate | **Run `setup`.** Four different causes look identical from the ship: no block, an unassembled contraption, `nav` switched off in `/craft.cfg`, or `probe` never run. |
 | Flies confidently the wrong way | `lift` and `main` swapped in `/craft.cfg`, or a mix term with the wrong `scale`. |
 | Climbs like a rocket on takeoff | `hover` far too high, or the mix is driving lift from two terms that add to more than you meant. |
 | Sinks slowly and never climbs | `hover` too low. Raise it; `vsI` will find the rest within a few seconds. |
@@ -826,7 +867,7 @@ Results are written to `/test-summary.txt` and `/test-*-results.txt` on the
 emulated computer rather than stdout, because headless mode redraws the entire
 terminal on every update.
 
-869 assertions. `spec.lua` covers each module on its own — the heading
+923 assertions. `spec.lua` covers each module on its own — the heading
 arithmetic and the wrap, plans and legs, sensor fusion and the ageing of a
 dead-reckoned fix, the PID loops and the integral clamp, every flight state and
 all four guards, the hull abstraction over a mock of the real peripheral API, the

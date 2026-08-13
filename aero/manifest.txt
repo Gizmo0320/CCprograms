@@ -15,6 +15,7 @@
 startup.lua
 update.lua
 probe.lua
+setup.lua
 beacon.lua
 guide.lua
 pilot.lua
@@ -29,6 +30,7 @@ lib/hull.lua
 lib/instruments.lua
 lib/autopilot.lua
 lib/nav.lua
+lib/needs.lua
 lib/terrain.lua
 lib/sable.lua
 lib/ui.lua

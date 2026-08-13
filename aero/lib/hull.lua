@@ -357,7 +357,7 @@ end
 -- A bad entry is dropped with a reason rather than throwing: a typo in
 -- /craft.cfg should cost you one control and a warning on screen, not a ship
 -- that will not boot far enough to let you fix it.
-function hull.define(craft)
+function hull.define(craft, path)
   hull.reset()
 
   if type(craft) ~= "table" then
@@ -602,6 +602,17 @@ function hull.define(craft)
       -- An explicit false means "this hull has none, stop looking and stop
       -- warning about it" -- a balloon with no optical sensor is a design, not a
       -- fault, and a warning that is always there is a warning nobody reads.
+      --
+      -- But if one is *actually attached*, `false` is almost certainly a
+      -- mistake rather than a decision, and it is the most confusing kind:
+      -- the hardware is right there and the program refuses to see it. Say so,
+      -- and say what to change, because nothing else in the program can explain
+      -- a symptom whose cause is a single word in a file.
+      if hull.find(types) then
+        hull.problems[#hull.problems + 1] =
+          role .. " = false in " .. (path or config.craftFile)
+          .. ", but a " .. next(types) .. " is attached"
+      end
       side = nil
     elseif side then
       if not peripheral.isPresent(side) then
@@ -653,8 +664,19 @@ function hull.define(craft)
   -- source at all lib/flight.lua will refuse to navigate, and being told that
   -- now beats discovering it on the pad.
   if not hull.instruments.nav then
-    hull.problems[#hull.problems + 1] =
-      "no navigation_table: this ship can hold altitude but cannot navigate"
+    -- Three different causes, one symptom, so the message names all three. This
+    -- is the single most likely thing to go wrong on a first hull and the
+    -- version that only said "no navigation_table" left nowhere to go next.
+    local attached = hull.find(ROLES.nav)
+    if attached then
+      hull.problems[#hull.problems + 1] =
+        "a navigation_table is attached but not being used -- check nav in "
+        .. (path or config.craftFile)
+    else
+      hull.problems[#hull.problems + 1] =
+        "no navigation_table found: is the contraption assembled, and is the "
+        .. "table part of it? Run `setup` to check the hardware"
+    end
   end
 
   -- The mix -----------------------------------------------------------------
@@ -711,7 +733,7 @@ function hull.load(path)
     return false, hull.problems
   end
 
-  return hull.define(craft)
+  return hull.define(craft, path)
 end
 
 function hull.get(name) return hull.controls[name] end

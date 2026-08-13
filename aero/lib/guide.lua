@@ -111,6 +111,54 @@ Type: guide first
   waypoint, FLY IT.
 ]] },
 
+{ title = "Checking the hardware", body = [[
+If a computer will not do
+what you expect, run:
+
+  setup
+
+It lists everything this
+role needs, marks what is
+attached RIGHT NOW, and
+says what each thing is
+for and what you lose
+without it.
+
+It re-checks every
+second, so you can leave
+it on screen, go and
+place the missing block,
+and watch the line turn
+green.
+
+  setup pilot
+
+shows another role's list,
+for planning a build
+before you have made it.
+
+On a flight computer it
+also reads /craft.cfg and
+reports anything that
+disagrees with the
+hardware -- which is
+where the confusing
+failures live. "It cannot
+find the navigation
+table" has four causes:
+
+ the block is not on the
+ contraption
+ the contraption is not
+ assembled
+ /craft.cfg switched the
+ role off
+ nothing has run probe
+
+setup tells the four
+apart. Nothing else can.
+]] },
+
 { title = "The hull file", body = [[
 /craft.cfg says what the
 ship is made of. Update
@@ -760,9 +808,13 @@ HANDS BACK AT ONCE
  named in /craft.cfg.
 
 CANNOT NAVIGATE
- No navigation table,
- or it is not part of
- the contraption.
+ Run `setup`. It tells
+ apart: no block, an
+ unassembled
+ contraption, a
+ /craft.cfg that
+ switched nav off, and
+ never having run probe.
 
 FLIES THE WRONG WAY
  lift and main swapped
@@ -809,6 +861,8 @@ Programs:
  server  the tower
  remote  the pocket
  beacon  be a waypoint
+ setup   what this
+         computer needs
  probe   survey the hull
  guide   this
  update  fetch the
