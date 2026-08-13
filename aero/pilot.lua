@@ -39,6 +39,7 @@ local nav         = require("lib.nav")
 local flight      = require("lib.flight")
 local terrain     = require("lib.terrain")
 local ui          = require("lib.ui")
+local boot        = require("lib.boot")
 
 local pilot = {
   fix       = instruments.blank(),
@@ -592,20 +593,40 @@ end
 -- Start
 --------------------------------------------------------------------------------
 
-local problems = select(2, hull.load())
+boot.start(label(), config.role, config.version)
 
-state.open(config.stateFile, {})
+local problems = {}
+boot.step("hull", function()
+  local ok, why = hull.load()
+  problems = why or {}
+  -- Not fatal. A ship with no craft file still has to reach the release below,
+  -- and it is far better to come up saying what is wrong than not to come up.
+  return ok, why
+end)
+
+for _, why in ipairs(problems) do boot.warn(why) end
+boot.note(("%d controls, %d mix terms"):format(hull.count(), #hull.mix))
+
+for _, role in ipairs({ "nav", "alt", "ground", "forward", "gimbal", "dock" }) do
+  boot.optional(role, hull.instruments[role] ~= nil,
+                hull.instruments[role] and hull.instruments[role].side or nil)
+end
+
+boot.step("state", function() state.open(config.stateFile, {}) return true end)
 
 pilot.ap = autopilot.new(hull.gains)
 pilot.fl = flight.new()
 restore()
+
+boot.optional("CC: Sable", sable.present(),
+              sable.present() and "physics available" or "not installed")
 
 -- Before the listener, before the first telemetry, before anything claims
 -- anything: put the hull back where a hull with no computer would be. A reboot
 -- mid-flight comes back with whatever override survived the restart still held,
 -- and every number below is computed on the assumption that we know what the
 -- controls are set to.
-hull.release()
+boot.step("hull released", function() hull.release() return true end)
 pilot.lastState = "released"
 
 -- ...and then put the wires back, which is the opposite thing and is not a
@@ -616,9 +637,11 @@ pilot.lastState = "released"
 -- came back at zero is a balloon told to empty.
 hull.restore(state.data.wires)
 
-if not net.open() then
-  print("No wireless modem. Flying blind and alone.")
-end
+boot.optional("modem", net.open() ~= nil,
+              net.open() and "open on " .. config.channel
+              or "none -- flying blind and alone")
+
+boot.done()
 
 net.broadcast(telemetry())
 redraw()

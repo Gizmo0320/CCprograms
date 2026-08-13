@@ -111,6 +111,53 @@ Type: guide first
   waypoint, FLY IT.
 ]] },
 
+{ title = "Configuring", body = [[
+  configure
+
+Panes, a review, and
+nothing written until you
+say so.
+
+It OPENS by telling you
+what is wrong with the
+configuration you already
+have, which saves the
+whole business of finding
+out.
+
+  Network
+    name, channel, role
+  Bearings
+    which is lift, which
+    is main
+  Instruments
+    what this hull reads
+  Limits
+    speeds, heights,
+    hover
+
+BEARINGS is the one that
+matters. Nothing can work
+out which bearing holds
+the ship up by looking --
+probe guesses -- and
+getting it backwards is a
+ship that flies into the
+ground. Here you see
+every bearing attached
+and point at the right
+one. Swapping them is two
+taps.
+
+Review and apply writes
+/aero.cfg and /craft.cfg.
+Both are ordinary Lua and
+still yours to edit.
+
+Nothing is written until
+APPLY.
+]] },
+
 { title = "Checking the hardware", body = [[
 If a computer will not do
 what you expect, run:
@@ -863,6 +910,8 @@ Programs:
  beacon  be a waypoint
  setup   what this
          computer needs
+ config- set it up without
+ ure     editing Lua
  probe   survey the hull
  guide   this
  update  fetch the

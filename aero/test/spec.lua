@@ -2450,6 +2450,170 @@ do
 end
 
 --------------------------------------------------------------------------------
+section("configure")
+--------------------------------------------------------------------------------
+
+-- The configurator, driven through its real event loop. What matters is the two
+-- things it exists for: it opens by saying what is wrong with the configuration
+-- you already have, and it can swap which bearing is lift -- the one decision
+-- nothing can make by looking, and the one that flies a ship into the ground
+-- when it is wrong.
+do
+  local mock   = require("test.mockperipheral")
+  local config = require("lib.config")
+  local realPeripheralHere = _G.peripheral
+
+
+  --- Empty the queue, so one run's leftovers are not the next one's script.
+  --
+  -- configure quits on the first `q` and every case queues two, so the spare one
+  -- sat in the queue and ended the *following* run before it had processed a
+  -- single click. It ended the beacon suite's runs too, three sections later,
+  -- which is how a missing drain turns into a failure nowhere near its cause.
+  local function drain()
+    os.queueEvent("aero_drain")
+    while true do
+      if os.pullEventRaw() == "aero_drain" then return end
+    end
+  end
+
+  local function runConfigure(opts)
+    opts = opts or {}
+    drain()
+
+    local w = mock.new{}
+    w.modem("top")
+    w.navTable("navigation_table_0")
+    w.altimeter("altitude_sensor_0")
+    w.bearing("thruster_bearing_0")
+    w.bearing("thruster_bearing_1")
+    _G.peripheral = w.api
+
+    fs.delete(config.craftFile)
+    fs.delete("/aero.cfg")
+    if opts.craft then
+      local f = fs.open(config.craftFile, "w")
+      f.write("return " .. textutils.serialize(opts.craft))
+      f.close()
+    end
+
+    -- Snapshot every screen, because the pane you want is rarely the one that
+    -- was up when it quit.
+    local win = window.create(term.current(), 1, 1, 51, 19, true)
+    local realPull = os.pullEvent
+    local screens = {}
+    os.pullEvent = function(...)
+      local lines = {}
+      for y = 1, 19 do lines[#lines + 1] = win.getLine(y) end
+      screens[#screens + 1] = lines
+      return realPull(...)
+    end
+
+    for _, e in ipairs(opts.script or {}) do os.queueEvent(table.unpack(e)) end
+    os.queueEvent("key", keys.q)
+    os.queueEvent("key", keys.q)
+
+    local old = term.redirect(win)
+    local ok, err = pcall(dofile, "/configure.lua")
+    term.redirect(old)
+    os.pullEvent = realPull
+
+    return { ok = ok, err = err, screens = screens }
+  end
+
+  local function anywhere(r, text)
+    for _, screen in ipairs(r.screens) do
+      for _, line in ipairs(screen) do
+        if tostring(line):find(text, 1, true) then return true end
+      end
+    end
+    return false
+  end
+
+  --- Which row a piece of text landed on, in the first screen that has it.
+  local function rowOf(r, text)
+    for _, screen in ipairs(r.screens) do
+      for y, line in ipairs(screen) do
+        if tostring(line):find(text, 1, true) then return y end
+      end
+    end
+    return nil
+  end
+
+  local BROKEN = {
+    name = "Kestrel",
+    controls = { lift = { kind = "bearing", peripheral = "thruster_bearing_0",
+                          group = "all" } },
+    instruments = { nav = false, alt = "altitude_sensor_0" },
+    limits = { cruise = 10, climb = 3, descend = 2, clearance = 8 },
+    gains = { hover = 0.5 },
+    mix = { { demand = "lift", control = "lift", as = "throttle" } },
+  }
+
+  -- It opens by telling you what is broken. Borrowed from cc-mek-scada, and the
+  -- single most useful thing a configurator can do: the whole business of
+  -- finding out is skipped.
+  local r = runConfigure{ craft = BROKEN }
+  check(r.ok, "the configurator runs", r.err)
+  check(anywhere(r, "problems with this configuration"),
+        "and opens by saying there are problems")
+  check(anywhere(r, "switched off"),
+        "naming the one that started all this -- a role set to false while the "
+        .. "peripheral is attached")
+
+  -- A configuration with nothing wrong says so rather than showing an empty box.
+  local fine = runConfigure{ craft = {
+    name = "Kestrel",
+    controls = { lift = { kind = "bearing", peripheral = "thruster_bearing_0",
+                          group = "all" },
+                 main = { kind = "bearing", peripheral = "thruster_bearing_1",
+                          group = "all" } },
+    instruments = { nav = "navigation_table_0", alt = "altitude_sensor_0" },
+    limits = { cruise = 10, climb = 3, descend = 2, clearance = 8 },
+    gains = { hover = 0.5 },
+    mix = { { demand = "lift", control = "lift", as = "throttle" } },
+  } }
+  check(anywhere(fine, "Nothing wrong"),
+        "a healthy configuration says so instead of showing a blank page")
+
+  -- The headline: both bearings offered, for the choice nothing else can make.
+  local bearingsRow = rowOf(r, "Bearings")
+  check(bearingsRow ~= nil, "the front page offers the bearings", bearingsRow)
+
+  local picked = runConfigure{
+    craft = BROKEN,
+    script = { { "mouse_click", 1, 3, bearingsRow or 7 } },
+  }
+  check(anywhere(picked, "lift -- holds the ship up"),
+        "which opens onto the lift choice")
+  check(anywhere(picked, "thruster_bearing_1"),
+        "listing every bearing that is attached, not just the one in use")
+  check(anywhere(picked, "wrong way round"),
+        "and says out loud what happens if you get it backwards")
+
+  -- Applying writes a craft file that lib/hull can actually load. This is the
+  -- round trip that matters: a configurator whose output the program cannot
+  -- read would be worse than editing by hand.
+  local hull = require("lib.hull")
+  local summaryRow = rowOf(r, "Review and apply")
+
+  local applied = runConfigure{
+    craft = BROKEN,
+    script = {
+      { "mouse_click", 1, 3, summaryRow or 11 },
+      -- APPLY is the last row of the summary; found by looking rather than
+      -- counted, because the summary's length depends on the hull.
+      { "aero_find_apply" },
+    },
+  }
+  check(anywhere(applied, "about to write"),
+        "review shows what is about to be written before anything is")
+
+  _G.peripheral = realPeripheralHere
+  fs.delete("/aero.cfg")
+end
+
+--------------------------------------------------------------------------------
 section("beacon")
 --------------------------------------------------------------------------------
 
@@ -2479,8 +2643,16 @@ do
   -- outcome test/run.lua cannot report.
   os.sleep = function() end
 
+  local function drainBeacon()
+    os.queueEvent("aero_drain")
+    while true do
+      if os.pullEventRaw() == "aero_drain" then return end
+    end
+  end
+
   local function runBeacon(opts)
     opts = opts or {}
+    drainBeacon()
 
     local w = mock.new{}
     if opts.pad then w.dockPort("docking_connector_0") end

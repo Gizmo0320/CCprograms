@@ -11,6 +11,12 @@
 
 local config = {}
 
+-- Stamped into the boot log and shown by `setup`, so "which version is this
+-- computer running" is answerable without diffing files against GitHub. Bumped
+-- by hand when something changes that a running network would notice.
+config.version = "1.0"
+
+
 -- The modem channel every program on this network talks on: the port. A modem
 -- never raises an event for a channel it has not opened, so two networks on
 -- different channels genuinely do not touch -- unlike rednet, which puts

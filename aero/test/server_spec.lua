@@ -52,6 +52,12 @@ local config = require("lib.config")
 local net    = require("lib.net")
 local log    = require("lib.log")
 
+-- The boot log prints, and worse, holds the screen waiting for a key when a
+-- program came up with problems -- which several cases here deliberately cause.
+-- It escaped only because every case ends with a queued terminate that its wait
+-- loop happens to break on, which is luck rather than design.
+require("lib.boot").quiet = true
+
 local realOpen      = net.open
 local realSend      = net.send
 local realBroadcast = net.broadcast

@@ -15,6 +15,7 @@ its role says:
 | `remote.lua` | an advanced pocket computer | Fleet, fly, nav, log |
 | `beacon.lua` | a computer standing where you want a waypoint | Announces itself as one. No sensors needed |
 | `setup.lua` | any of them | What this computer needs, what it has, and what is wrong |
+| `configure.lua` | any of them | Set it up in panes, with a review, without editing Lua |
 
 Plus `probe.lua`, which looks at what is bolted to the hull and writes a
 `/craft.cfg` to start from; `beacon.lua`, a computer you place in the world and
@@ -112,10 +113,11 @@ probe
 It writes `/craft.cfg` from what it can see, and `/aero.survey.txt` listing
 every peripheral it found.
 
-**5. Check the one guess.** Open `/craft.cfg` and confirm which bearing is
-`lift` and which is `main`. `probe` assumes the first bearing lifts and the
-second pushes; that is the commonest arrangement and still a guess, and getting
-it backwards is a ship that accelerates into the ground.
+**5. Check the one guess.** Run `configure` and open **Bearings**. `probe`
+assumes the first bearing lifts and the second pushes; that is the commonest
+arrangement and still a guess, and getting it backwards is a ship that
+accelerates into the ground. The pane shows every bearing attached — point at the
+right one. (Or edit `/craft.cfg` by hand; it is only Lua.)
 
 **6. Tethered test — do not skip this.** Run `pilot` with no flight plan. Check
 the pocket computer sees the ship. Then press **Ctrl-T**. Every thruster must go
@@ -142,6 +144,35 @@ needs before you take off.
 **10. Optional, later.** Put a computer at the far pad, install it with
 `--role=beacon`, and run `beacon` to give it a name and its coordinates. It is
 then a waypoint that is always there, with nobody standing next to it.
+
+## Configuring
+
+```
+configure
+```
+
+Panes, a review, and nothing written until you say so — the shape
+[cc-mek-scada](https://github.com/MikaylaFischler/cc-mek-scada) uses, which gets
+three things right this project did not: setup is its own program, the front page
+**tells you what is wrong with the configuration you already have**, and you see
+everything you are about to write before it is written.
+
+| Pane | |
+| --- | --- |
+| **Network** | name, channel, role |
+| **Bearings** | which bearing is lift and which is main |
+| **Instruments** | what this hull can read, including switching one off deliberately |
+| **Limits** | cruise, climb, descend, clearance, hover |
+
+**Bearings is the one that matters.** Nothing can work out which bearing holds
+the ship up by looking — `probe` guesses — and getting it backwards is a ship
+that accelerates into the ground. Here you are shown every bearing that is
+actually attached and you point at the right one; swapping them is two taps
+rather than an edit to a file you have to find first.
+
+It writes ordinary Lua to `/aero.cfg` and `/craft.cfg`, both still outside
+`manifest.txt` and still yours to edit by hand. This is a nicer way in, not a
+replacement.
 
 ## Checking the hardware
 
@@ -823,6 +854,15 @@ If the ship hunts left and right of its heading, `hdgP` is too high. If it rolls
 out of turns early and then overshoots, `hdgD` is too high — yaw drives a *rate*
 of turn, so this loop needs far less damping than it looks like it should.
 
+## The boot log
+
+Every program now says what it is doing as it comes up — the hull, each
+instrument, the modem, the saved state — with `ok`, `FAIL` or `--` against each
+line. A computer that comes up wrong should tell you *where* it stopped rather
+than presenting a blank screen. If anything failed it holds the log on screen for
+ten seconds so you can read it, then carries on, because an unattended computer
+in an unloaded chunk must not sit at a prompt forever.
+
 ## When it goes wrong
 
 Also in the game, as `guide` → *When it goes wrong*.
@@ -867,7 +907,7 @@ Results are written to `/test-summary.txt` and `/test-*-results.txt` on the
 emulated computer rather than stdout, because headless mode redraws the entire
 terminal on every update.
 
-923 assertions. `spec.lua` covers each module on its own — the heading
+936 assertions. `spec.lua` covers each module on its own — the heading
 arithmetic and the wrap, plans and legs, sensor fusion and the ageing of a
 dead-reckoned fix, the PID loops and the integral clamp, every flight state and
 all four guards, the hull abstraction over a mock of the real peripheral API, the

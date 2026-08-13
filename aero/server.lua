@@ -20,6 +20,7 @@ local state  = require("lib.state")
 local nav    = require("lib.nav")
 local log    = require("lib.log")
 local ui     = require("lib.ui")
+local boot   = require("lib.boot")
 local terrain = require("lib.terrain")
 
 local W, H = term.getSize()
@@ -639,12 +640,17 @@ end
 -- Start
 --------------------------------------------------------------------------------
 
+boot.start(os.getComputerLabel() or "tower", "server", config.version)
+
 state.open(config.fleetFile, { waypoints = {}, routes = {}, log = {}, home = nil })
 state.data.waypoints = state.data.waypoints or {}
 state.data.routes    = state.data.routes or {}
 log.load(state.data.log)
 
 map = terrain.load(state.data.terrain)
+
+boot.note(("%d waypoints, %d log entries, %d cells surveyed")
+  :format(#nav.names(state.data.waypoints), #log.entries, terrain.size(map)))
 
 term.clear()
 term.setCursorPos(1, 1)

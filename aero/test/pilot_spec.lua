@@ -66,6 +66,12 @@ local config = require("lib.config")
 local net    = require("lib.net")
 local mock   = dofile("/test/mockperipheral.lua")
 
+-- The boot log prints, and worse, holds the screen waiting for a key when a
+-- program came up with problems -- which several cases here deliberately cause.
+-- It escaped only because every case ends with a queued terminate that its wait
+-- loop happens to break on, which is luck rather than design.
+require("lib.boot").quiet = true
+
 -- The module cache is deliberately *not* cleared between cases. pilot.lua is
 -- dofile'd fresh each time and resets everything that carries state -- the hull
 -- through hull.load, the plan through state.open -- while lib/net is the module
