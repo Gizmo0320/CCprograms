@@ -18,9 +18,16 @@ its role says:
 | `configure.lua` | any of them | Set it up in panes, with a review, without editing Lua |
 
 Plus `probe.lua`, which looks at what is bolted to the hull and writes a
-`/craft.cfg` to start from; `beacon.lua`, a computer you place in the world and
+`/craft.cfg` to start from — and, with `--eyes`, shows live what the optical
+sensors actually report; `beacon.lua`, a computer you place in the world and
 give coordinates to, so that it *is* a waypoint; and `setup.lua`, which tells you
 what any computer is missing.
+
+```
+probe            survey the hull, and write /craft.cfg if there is not one
+probe --force    survey, and write /craft.cfg.new even if there is
+probe --eyes     watch every optical sensor live: range, hit, distance, block
+```
 
 **Every ship is autonomous.** The tower and the pocket set goals; they never fly
 anything. Switch the tower off, break it, let its chunk unload — the ships carry
@@ -104,7 +111,7 @@ things; the defaults are fine for a first ship.
 `NO` in red has to be dealt with before the rest of this works. Leave it running
 while you fix them; it re-checks itself.
 
-**4. Survey the hull.** On the ship's computer:
+**4. Survey the hull, with the contraption assembled.** On the ship's computer:
 
 ```
 probe
@@ -112,6 +119,16 @@ probe
 
 It writes `/craft.cfg` from what it can see, and `/aero.survey.txt` listing
 every peripheral it found.
+
+Assembled matters here and only here. An unassembled contraption's blocks are
+not peripherals yet, so `probe` would survey a hull with nothing on it. The
+*pilot* no longer cares — it re-resolves whenever a peripheral attaches, so you
+can start it before assembling — but `probe` writes a file, and a file written
+from an empty survey is a hull definition that says the ship has no instruments.
+
+If two optical sensors came back, run `probe --eyes` and check which is which:
+they are the same block, so `probe` guesses the first points down and the second
+forward.
 
 **5. Check the one guess.** Run `configure` and open **Bearings**. `probe`
 assumes the first bearing lifts and the second pushes; that is the commonest
@@ -919,6 +936,12 @@ than presenting a blank screen. If anything failed it holds the log on screen fo
 ten seconds so you can read it, then carries on, because an unattended computer
 in an unloaded chunk must not sit at a prompt forever.
 
+The boot log is a snapshot, though, and on a ship the hardware moves afterwards.
+A pilot logs a `hardware` event whenever assembling or disassembling the
+contraption changes which instruments it can resolve — so the flight log records
+the ship gaining its navigation table three seconds after boot, rather than
+leaving a boot line that said `--` and was true only for a moment.
+
 ## When it goes wrong
 
 Also in the game, as `guide` → *When it goes wrong*.
@@ -988,7 +1011,7 @@ headless mode redraws the entire terminal on every update — and because an
 uncaught error drops the emulator into its shell, where a crash and a hang look
 identical from outside.
 
-974 assertions. `spec.lua` covers each module on its own — the heading
+978 assertions. `spec.lua` covers each module on its own — the heading
 arithmetic and the wrap, plans and legs, sensor fusion and the ageing of a
 dead-reckoned fix, the PID loops and the integral clamp, every flight state and
 all four guards, the hull abstraction over a mock of the real peripheral API, the

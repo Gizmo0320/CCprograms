@@ -77,6 +77,22 @@ Type: guide first
   listing every
   peripheral it found.
 
+  ASSEMBLED matters for
+  this step and only
+  this one. Unassembled,
+  the ship's blocks are
+  not peripherals yet,
+  and probe would write
+  a hull file saying
+  there are none.
+
+  The pilot does not
+  care -- it re-resolves
+  when peripherals
+  attach -- but probe
+  writes a file, and the
+  file sticks.
+
 3 Open /craft.cfg. Check
   the one thing probe
   had to guess: which
@@ -223,6 +239,23 @@ whenever a peripheral
 attaches, and logs it.
 Assembly order no longer
 matters.
+
+For the optical sensors
+specifically:
+
+  probe --eyes
+
+shows what each one
+actually reports -- its
+range, whether it sees
+anything, how far, and
+which calls fail -- next
+to the role /craft.cfg
+gives it. A sensor that
+is not working looks,
+from every other screen,
+exactly like one pointed
+at a long drop.
 ]] },
 
 { title = "The hull file", body = [[
@@ -911,6 +944,32 @@ CANNOT NAVIGATE
  /craft.cfg that
  switched nav off, and
  never having run probe.
+
+ If the block IS there
+ and setup can see it,
+ you are on an old
+ version. The pilot now
+ re-resolves whenever a
+ peripheral attaches,
+ so assembling the ship
+ after starting the
+ pilot is fine. Before,
+ it was not.
+
+NO CLEARANCE SHOWN
+ The ground sensor
+ cannot see that far
+ down. Its maximum is
+ set on the BLOCK; the
+ ship asks and takes
+ what it is given.
+ Run  probe --eyes  to
+ see the real numbers.
+
+ Same cause if nothing
+ is ever surveyed: the
+ survey is built from
+ that one reading.
 
 FLIES THE WRONG WAY
  lift and main swapped

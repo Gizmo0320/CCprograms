@@ -704,7 +704,11 @@ do
   -- The topics a player in trouble will actually look for.
   for _, word in ipairs({ "probe", "craft.cfg", "balloon", "hold = true",
                           "wireless modem", "tether", "guard", "bingo",
-                          "hover", "waypoint" }) do
+                          "hover", "waypoint",
+                          -- The two failures players actually hit, in the
+                          -- words they would search for rather than the words
+                          -- the fix is described in.
+                          "probe --eyes", "assembl", "attach", "clearance" }) do
     checkQuiet(#guide.search(word) > 0, "the manual mentions " .. word)
   end
   check(#guide.search("probe") > 0 and #guide.search("bingo") > 0,
