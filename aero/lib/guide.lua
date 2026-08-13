@@ -134,6 +134,19 @@ Panes, a review, and
 nothing written until you
 say so.
 
+NOTHING IS SAVED UNTIL
+YOU APPLY. Open Review
+and press ENTER. The
+APPLY button does the
+same, but it sits at the
+END of that pane, below
+the bottom of the screen
+-- so if your changes
+keep vanishing, that is
+why. Leaving with q
+discards them, on
+purpose.
+
 It OPENS by telling you
 what is wrong with the
 configuration you already

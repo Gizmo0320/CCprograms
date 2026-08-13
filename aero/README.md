@@ -971,6 +971,7 @@ Also in the game, as `guide` → *When it goes wrong*.
 | Altitude order refused on a parked ship | It has no altitude to move *from* and none was given. Send an absolute altitude, or check it has an altitude sensor. |
 | Terrain guard fires in clear air | The `ground` sensor is the forward-facing one. `configure` → Instruments, or swap them in `/craft.cfg`. |
 | Cockpit shows `clear --` at altitude | The ground sensor cannot see that far. `probe --eyes` shows its range. The maximum is set on the sensor block itself, and the flight computer cannot raise it past that — it asks, and takes what it is given. |
+| `configure` does not seem to save | **APPLY is at the bottom of the Review pane, below the fold.** Press **ENTER** on that pane instead — it writes everything without scrolling. Nothing is written until one or the other happens; leaving with `q` discards the lot, by design. |
 | Ship says it cannot find the `navigation_table` | Almost always the pilot was started before the contraption was assembled. Fixed as of this version: the pilot now re-resolves its hardware whenever a peripheral attaches. If it persists, `probe --eyes` and `configure` → Instruments. |
 | An instrument works in `setup` but not in `pilot` | Same cause, and this was the tell: `setup` and `configure` have always rescanned on attach, so they could see hardware the flying program had never resolved. |
 | Nothing is ever surveyed | Same cause: surveying is built from the ground reading, so a ship that cannot see the ground records nothing. |
@@ -1011,7 +1012,7 @@ headless mode redraws the entire terminal on every update — and because an
 uncaught error drops the emulator into its shell, where a crash and a hang look
 identical from outside.
 
-978 assertions. `spec.lua` covers each module on its own — the heading
+992 assertions. `spec.lua` covers each module on its own — the heading
 arithmetic and the wrap, plans and legs, sensor fusion and the ageing of a
 dead-reckoned fix, the PID loops and the integral clamp, every flight state and
 all four guards, the hull abstraction over a mock of the real peripheral API, the

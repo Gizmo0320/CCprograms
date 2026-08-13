@@ -150,6 +150,17 @@ local function findNotices()
     end
   end
 
+  -- Two optical sensors with fewer than two roles named. `lib/hull.lua` says
+  -- this on the ship and in `setup`, and the front page here said nothing at
+  -- all -- so the message told you to name them and the screen you were sent to
+  -- fix it on had no opinion about it. The one place a configuration problem
+  -- must appear is the configurator.
+  local eyes = #(attached.optical_sensor or {})
+  if eyes > 1 and (instruments.ground == nil or instruments.forward == nil) then
+    notices[#notices + 1] = { ("%d optical sensors -- name ground and forward "
+      .. "in Instruments, or one is a guess"):format(eyes), "warn" }
+  end
+
   local controls = 0
   for _ in pairs(draft.craft.controls or {}) do controls = controls + 1 end
   if controls == 0 then
@@ -561,9 +572,32 @@ local function buildLimits()
         colour = ui.theme.dim })
 end
 
+--- Write everything, from the review pane or from the key that shortcuts it.
+local function apply()
+  writeNetwork()
+  writeCraft()
+  pane = "done"
+end
+
 local function buildSummary()
   row({ kind = "action", text = "< back",
         colour = ui.theme.accent, click = function() pane = "main" end })
+
+  -- APPLY is the last row of this pane, and this pane is longer than the
+  -- screen -- so on a hull of any size the only button that does anything is
+  -- below the fold, behind a one-character scroll arrow in the corner. The
+  -- symptom is somebody carefully setting everything, leaving, and finding the
+  -- file unchanged, with nothing anywhere to say why.
+  --
+  -- So say it here, at the top, where the eye already is, and make ENTER do it
+  -- without scrolling at all. The button at the bottom stays: reading before
+  -- writing is the point of the pane, and this is a shortcut for people who
+  -- have already read it.
+  row({ kind = "note", text = " ENTER writes it all. Or scroll down",
+        colour = ui.theme.ok })
+  row({ kind = "note", text = " to APPLY at the end of this list.",
+        colour = ui.theme.ok })
+  row({ kind = "gap" })
 
   local n = draft.network
   row({ kind = "head", label = "about to write" })
@@ -606,11 +640,7 @@ local function buildSummary()
 
   row({ kind = "gap" })
   row({ kind = "action", text = "APPLY -- write it", colour = ui.theme.ok,
-        click = function()
-          writeNetwork()
-          writeCraft()
-          pane = "done"
-        end })
+        click = apply })
 end
 
 --------------------------------------------------------------------------------
@@ -753,6 +783,10 @@ while true do
     if a == keys.q then
       if pane == "main" then break end
       pane = "main"
+    elseif a == keys.enter and pane == "summary" then
+      -- Only on the review pane, so it cannot be pressed by somebody who has
+      -- not seen what is about to be written.
+      apply()
     elseif a == keys.up then list.scroll = math.max(0, list.scroll - 1)
     elseif a == keys.down then list.scroll = list.scroll + 1 end
     draw()

@@ -2765,6 +2765,10 @@ do
     w.altimeter("altitude_sensor_0")
     w.bearing("thruster_bearing_0")
     w.bearing("thruster_bearing_1")
+    if opts.eyes then
+      w.optical("optical_sensor_0", { range = 128 })
+      w.optical("optical_sensor_1", { range = 128 })
+    end
     _G.peripheral = w.api
 
     fs.delete(config.craftFile)
@@ -2809,9 +2813,46 @@ do
   end
 
   --- Which row a piece of text landed on, in the first screen that has it.
-  local function rowOf(r, text)
-    for _, screen in ipairs(r.screens) do
-      for y, line in ipairs(screen) do
+  --
+  -- `from` skips the opening screens, and is not optional politeness: the front
+  -- page names the roles in its warnings, so searching every screen for
+  -- "ground" finds the notice about the ground sensor rather than the row that
+  -- sets it -- and a click at that row lands on whatever the front page has
+  -- there instead. Screen 1 is always the front page.
+  local function rowOf(r, text, from)
+    for i = from or 1, #r.screens do
+      for y, line in ipairs(r.screens[i]) do
+        if tostring(line):find(text, 1, true) then return y end
+      end
+    end
+    return nil
+  end
+
+  --- Which row a piece of text is on in the *last* screen drawn.
+  --
+  -- The front page is a list of what is currently wrong, so fixing something
+  -- removes a line and every button below it moves up. A row found before the
+  -- fix is the wrong row after it -- which is a fair description of clicking on
+  -- a live screen, and fatal to a script written in advance. Reading the final
+  -- screen gives the layout as it stands when the click actually happens.
+  local function rowOfLast(r, text)
+    local screen = r.screens[#r.screens]
+    for y, line in ipairs(screen or {}) do
+      if tostring(line):find(text, 1, true) then return y end
+    end
+    return nil
+  end
+
+  --- The row in the *latest* screen that shows this text at all.
+  --
+  -- For something reached by scrolling. The first screen showing APPLY is the
+  -- one where it scrolled into view, near the bottom edge and still moving; the
+  -- last is the settled layout that a click will actually meet. And it cannot
+  -- simply read the final screen, because every run ends with `q` returning to
+  -- the front page, which does not have APPLY on it at all.
+  local function rowOfLatest(r, text)
+    for i = #r.screens, 1, -1 do
+      for y, line in ipairs(r.screens[i]) do
         if tostring(line):find(text, 1, true) then return y end
       end
     end
@@ -2886,6 +2927,140 @@ do
   }
   check(anywhere(applied, "about to write"),
         "review shows what is about to be written before anything is")
+
+  ------------------------------------------------------------------------------
+  -- Naming the two optical sensors, which is the whole reason the pane exists.
+  --
+  -- A hull with two of them warns until *both* roles are named, because one
+  -- named and one guessed is even odds on the terrain guard reading a hillside.
+  -- Following that instruction has to make the warning go away, and it only
+  -- does if what the pane shows survives into the file.
+  ------------------------------------------------------------------------------
+  local TWO_EYES = {
+    name = "Kestrel",
+    controls = { lift = { kind = "bearing", peripheral = "thruster_bearing_0",
+                          group = "all" } },
+    instruments = { nav = "navigation_table_0", alt = "altitude_sensor_0" },
+    limits = { cruise = 10, climb = 3, descend = 2, clearance = 8 },
+    gains = { hover = 0.5 },
+    mix = { { demand = "lift", control = "lift", as = "throttle" } },
+  }
+
+  -- First: the warning is there to begin with, or the rest proves nothing.
+  local warned = runConfigure{ craft = TWO_EYES, eyes = true }
+  check(anywhere(warned, "optical sensors"),
+        "two sensors with neither named is called out")
+
+  local instrumentsRow = rowOf(warned, "Instruments")
+  check(instrumentsRow ~= nil, "the front page offers the instruments pane")
+
+  -- Where the rows land, learned by opening the panes and looking rather than
+  -- counted by hand -- the list length depends on the hull, and a click at a
+  -- guessed row is a test that passes by hitting something else.
+  --
+  -- Two discovery runs, because a script is queued before the run starts and so
+  -- cannot see the screen it is clicking on.
+  local openInstruments = { "mouse_click", 1, 3, instrumentsRow or 8 }
+
+  local instPane = runConfigure{ craft = TWO_EYES, eyes = true,
+                                 script = { openInstruments } }
+  local groundY  = rowOf(instPane, "ground", 2)
+  local forwardY = rowOf(instPane, "forward", 2)
+  check(groundY and forwardY,
+        "the instruments pane offers both optical roles",
+        tostring(groundY) .. "/" .. tostring(forwardY))
+
+  -- The naming itself, which everything after this reuses. `ground` needs one
+  -- tap to go from auto to the first sensor; `forward` needs two, because both
+  -- roles offer the same list and its first entry is the same block.
+  local naming = {
+    openInstruments,
+    { "mouse_click", 1, 3, groundY or 4 },
+    { "mouse_click", 1, 3, forwardY or 5 },
+    { "mouse_click", 1, 3, forwardY or 5 },
+    { "key", keys.q },                                  -- back to the front page
+  }
+
+  --- The naming steps, then whatever else.
+  local function after(...)
+    local s = {}
+    for _, e in ipairs(naming) do s[#s + 1] = e end
+    for _, e in ipairs({ ... }) do s[#s + 1] = e end
+    return s
+  end
+
+  -- Where Review sits *once the sensors are named* -- by then its own warning
+  -- has gone from the front page and taken a row with it.
+  local reviewY = rowOfLast(runConfigure{ craft = TWO_EYES, eyes = true,
+                                          script = naming }, "Review and apply")
+  check(reviewY ~= nil, "review is still reachable after fixing the warning",
+        tostring(reviewY))
+
+  -- APPLY is the last row of the review pane and the pane is longer than the
+  -- screen, so it has to be scrolled to. The original version of this case
+  -- queued a made-up `aero_find_apply` event that configure.lua has never
+  -- handled -- an unknown event is simply ignored, so **APPLY was never once
+  -- clicked** and `writeCraft` went untested from the day it was written.
+  local openReview = { { "mouse_click", 1, 3, reviewY or 11 } }
+  for _ = 1, 40 do openReview[#openReview + 1] = { "key", keys.down } end
+
+  local revPane = runConfigure{ craft = TWO_EYES, eyes = true,
+                                script = after(table.unpack(openReview)) }
+  local applyY  = rowOfLatest(revPane, "APPLY")
+  check(applyY ~= nil, "and the review pane offers APPLY", tostring(applyY))
+
+  -- Now do the whole thing the way a player would: name them, review, apply.
+  local script = after(table.unpack(openReview))
+  script[#script + 1] = { "mouse_click", 1, 3, applyY or 18 }
+
+  local named = runConfigure{ craft = TWO_EYES, eyes = true, script = script }
+  check(named.ok, "the configurator survives naming them", named.err)
+
+  -- The file, which is the thing actually in doubt.
+  local written = fs.exists(config.craftFile) and dofile(config.craftFile) or nil
+  check(type(written) == "table", "a craft file was written at all")
+
+  if type(written) == "table" then
+    local inst = written.instruments or {}
+    check(inst.ground == "optical_sensor_0",
+          "ground is written to the file", tostring(inst.ground))
+    check(inst.forward == "optical_sensor_1",
+          "and so is forward -- the role that has no auto-find to fall back on",
+          tostring(inst.forward))
+    check(inst.ground ~= inst.forward,
+          "and they are not the same block")
+
+    -- The round trip: load what was written and confirm the warning is gone.
+    -- Following the instruction has to *work*, or the message is just noise
+    -- that appears whatever you do.
+    hull.define(written)
+    local stillWarned = false
+    for _, p in ipairs(hull.problems) do
+      if p:find("optical sensors", 1, true) then stillWarned = true end
+    end
+    check(not stillWarned,
+          "and loading it back leaves no warning -- doing what it asked worked",
+          table.concat(hull.problems, "; "))
+  end
+
+  -- ENTER on the review pane does the same thing without scrolling, which is
+  -- the actual fix: the button was always there and always off the bottom of
+  -- the screen. Note the script -- open review, press ENTER, nothing else.
+  fs.delete(config.craftFile)
+  local byKey = runConfigure{
+    craft = TWO_EYES, eyes = true,
+    script = after({ "mouse_click", 1, 3, reviewY or 11 }, { "key", keys.enter }),
+  }
+  check(byKey.ok, "ENTER on the review pane runs", byKey.err)
+  check(anywhere(byKey, "ENTER writes it"),
+        "and the pane says so at the top, where the eye already is")
+
+  local viaKey = fs.exists(config.craftFile) and dofile(config.craftFile) or nil
+  check(type(viaKey) == "table" and (viaKey.instruments or {}).forward
+          == "optical_sensor_1",
+        "and it writes the file without ever scrolling to the button",
+        type(viaKey) == "table" and tostring((viaKey.instruments or {}).forward)
+          or "no file")
 
   _G.peripheral = realPeripheralHere
   fs.delete("/aero.cfg")
