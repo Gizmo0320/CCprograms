@@ -641,6 +641,123 @@ Terms **add**, so two bearings can share the lift:
 { demand = "forward", control = "wheels", as = "right" },
 ```
 
+## The flight deck
+
+Put a **monitor on the contraption** and the pilot draws a flight deck on it —
+for somebody sitting in the ship, rather than for somebody standing at the
+computer. A 4x3 monitor at text scale 0.5 is about 78x38, six times the area of
+the flight computer's own screen, and the right use of that is not more numbers:
+it is instruments read as *pictures*. A tape tells you the altitude is falling
+before you have read a digit of it.
+
+```
+ Kestrel  CRUISE                                                     FLIGHT
+       :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+    26 :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::    220
+    24 :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::    210
+    16 ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::: *  170
+ *  14 :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::    160
+ >  12 :::::::::::::::::::::::::::::::-o-::::::::::::::::::::::::::#: >  150
+    10 :::::::::::::::::::::::::::::::::################################ 140
+     8 ::::#############################################################  130
+                          to quarry-pad   340m to run
+                             P +2   R -4   VS +1.2
+--------E--------------+--------------S--------------+--------------W-------
+                                          ^                          3 / 12
+ lift      62%                         clear  38
+ main      24%                         ahead  --
+ fuel 412s                             tilt   4
+                                       conn   gizmo
+ nav  128 150 -412
+    PAGE         ALT+         ALT-         HOLD         LAND          CONN
+```
+
+Speed on the left, altitude on the right, artificial horizon between them and a
+compass under it — the way every real primary flight display is laid out, because
+anybody who has seen one reads this without being told. `>` is the current value
+and `*` is the one it is flying to; the `^` under the compass is the wanted
+heading.
+
+**Two pages.** Touch the header to swap. `FLIGHT` is the deck above; `NAV` is the
+flight plan leg by leg with distances and coordinates, what it adds up to, an
+ETA, and anything wrong with the hull — which is the one screen on the ship with
+room for the last of those.
+
+**The buttons are real orders.** `ALT+` and `ALT-` nudge the hold altitude,
+`HOLD` and `LAND` do what they say, and `CONN` takes control. Every one goes
+through `flight.command` exactly as an order from the pocket does — same conn,
+same guards, same log entry — so somebody on the deck cannot fight somebody on
+the ground, and a button that would be refused is drawn dim before it is pressed
+rather than after. A refusal replaces the position line for six seconds and says
+who has the ship.
+
+The **header turns red and names the guard** when one fires, because that is the
+one thing on this screen that has to be readable across a cockpit.
+
+It renders at whatever size it is given. Below about 36x16 there is no room for
+an instrument worth reading, so it says so and falls back to the altitude and
+heading — a blank monitor would send somebody looking for a fault that is really
+a one-block screen. It is `term.redirect` onto the same renderer rather than a
+second drawing path, the same choice the tower's dashboard makes and for the same
+reason: nobody looks at two screens at once, so a bug in the copy nobody watches
+survives forever.
+
+### How big it has to be
+
+**Two blocks by two, minimum.** Height is what binds: a monitor one block tall is
+nine rows however wide you build it, which is not enough for a horizon, a compass
+and a readout panel at once.
+
+| Blocks | Characters | | |
+| --- | --- | --- | --- |
+| 1 wide, any height | 14 wide | no | too narrow |
+| any width, 1 tall | 9 tall | no | too short |
+| **2x2** | 36x24 | yes | exactly the minimum width |
+| **3x2** | 57x24 | yes | comfortable |
+| **4x3** | 78x38 | yes | what the layout was designed against |
+| 6x4 | 121x52 | yes | a bigger horizon, and nothing new |
+
+Three blocks tall turns the readout panel from three rows into four, which is
+what adds the `conn` line. Past that, extra height goes **entirely to the
+horizon**: the tapes stop at fifteen rows and the compass at two, on purpose, so
+the picture grows while the scales stay legible.
+
+The pilot calls `setTextScale(0.5)` itself on every draw, so there is nothing to
+set up and the sizes above already account for it.
+
+Get it wrong and the screen says so — below 36x16 it shows the altitude, the
+heading and *monitor too small for the deck*, rather than going blank and sending
+you after a fault that is really a one-block screen.
+
+### More than one screen
+
+Put up as many monitors as you like. Every one of them is drawn on, each laid out
+for **its own size** — a wide one beside a small one is fine, and a touch is
+always read against the screen it landed on.
+
+They **default to different pages**: the first is the flight deck, the second is
+the nav display, and any after that alternate. A second screen showing the same
+page as the first is a second screen wasted, and a deck alongside a nav display is
+what a cockpit with two screens is for. Touching a header turns *that* screen and
+leaves the others where they are, so you can have two decks or two nav pages if
+you would rather.
+
+Monitors may be **bolted to the computer or reached over a wired modem network**,
+which on an assembled contraption is usually how one ends up somewhere sensible —
+the flight computer is rarely where you want to sit. CC gives a networked
+peripheral a name like `monitor_0` rather than a side, and delivers touches under
+that same name; nothing here assumes a touch came from one of the computer's six
+faces. Both the monitors and the computer have to be part of the assembled
+contraption, as ever.
+
+The whole deck is assembled once per heartbeat however many screens there are,
+and only the page differs between them — a second monitor costs a redraw, not a
+second walk of the flight plan, on the one computer that is also flying the ship.
+
+A monitor is **optional**. Break one off mid-flight and the ship carries on, and
+so do the other screens: the deck is the least important thing aboard and cannot
+take anything else down with it.
+
 ## The screens
 
 Four programs, one look. Colour means the same thing on all of them — a state

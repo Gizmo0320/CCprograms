@@ -875,6 +875,264 @@ do
 end
 
 --------------------------------------------------------------------------------
+section("deck: the flight deck")
+--------------------------------------------------------------------------------
+
+-- A monitor on the contraption, read from the pilot's seat while the ship flies.
+--
+-- Two halves are worth testing and they are different in kind. The layout is
+-- arithmetic and is checked directly, at every size a monitor comes in -- that
+-- is the part with the off-by-ones. The drawing is checked by rendering into a
+-- window and reading the characters back, which is the only way to catch an
+-- instrument that is drawn off the edge of its own screen.
+do
+  local deck = require("lib.deck")
+  local ui   = require("lib.ui")
+
+  local VIEW = {
+    page = "flight",
+    label = "Kestrel", state = "cruise",
+    alt = 150, targetAlt = 170,
+    speed = 12.4, targetSpeed = 14,
+    heading = 3, targetHeading = 12,
+    vs = 1.2, pitch = 2.1, roll = -4.0, tilt = 4,
+    clearance = 38, ahead = nil,
+    fuel = 4200, capacity = 8000, burn = 412,
+    controls = { { name = "lift", value = 0.62 }, { name = "main", value = 0.24 } },
+    legs = {
+      { name = "quarry-pad", distance = 340, current = true,
+        x = 128, y = 70, z = -700 },
+      { name = "ridge-point", distance = 1120, x = 640, y = 96, z = -1200 },
+    },
+    home = "home-pad", commander = "gizmo", mayCommand = true,
+    x = 128, y = 150, z = -412, usable = true, assembled = true, source = "nav",
+  }
+
+  local function view(over)
+    local out = {}
+    for k, v in pairs(VIEW) do out[k] = v end
+    for k, v in pairs(over or {}) do out[k] = v end
+    return out
+  end
+
+  ------------------------------------------------------------------------------
+  -- Layout, at every size a monitor actually comes in
+  ------------------------------------------------------------------------------
+
+  -- Monitors are built from blocks, so the sizes are not arbitrary -- but there
+  -- are a lot of them, and a deck that assumed its own shape would draw off the
+  -- edge of the small ones in silence.
+  local SIZES = {
+    { 20, 10 }, { 29, 12 }, { 36, 16 }, { 39, 19 }, { 57, 25 }, { 79, 38 },
+    { 100, 50 }, { 164, 81 },
+  }
+
+  for _, size in ipairs(SIZES) do
+    local w, h = size[1], size[2]
+    local at = deck.layout(w, h)
+    local where = ("%dx%d"):format(w, h)
+
+    -- Nothing may be positioned outside the screen it is drawn on. This is the
+    -- whole reason the arithmetic is a pure function.
+    for name, box in pairs(at) do
+      if type(box) == "table" and box.x then
+        checkQuiet(box.x >= 1 and box.x + box.w - 1 <= w,
+                   ("%s: %s fits across"):format(where, name))
+        checkQuiet(box.y >= 1 and box.y + box.h - 1 <= h,
+                   ("%s: %s fits down"):format(where, name))
+        checkQuiet(box.w >= 0 and box.h >= 0,
+                   ("%s: %s is not inside out"):format(where, name))
+      end
+    end
+  end
+  check(true, "every element fits on every monitor size")
+
+  -- The furniture is anchored to the bottom, in a fixed order, so the two pages
+  -- cannot disagree about where the buttons are.
+  local big = deck.layout(79, 38)
+  check(big.buttons.y == 38, "the buttons are the last row", big.buttons.y)
+  check(big.fix.y == 37, "with the fix line above them", big.fix.y)
+  check(big.panel.y + big.panel.h == big.fix.y, "and the panel above that")
+  check(big.plan.y == big.speed.y or big.plan.y == 2,
+        "and the nav page starts where the instruments do")
+
+  -- The horizon fills the height and the tapes deliberately do not. Both were
+  -- tried the other way round: full-height tapes ran the speed scale down past
+  -- zero, and capping the whole block left a twelve-row hole under it.
+  check(big.horizon.h > big.speed.h,
+        "the horizon grows with the screen and the tapes do not",
+        ("%d vs %d"):format(big.horizon.h, big.speed.h))
+  check(big.speed.h <= 15, "tapes stay legible", big.speed.h)
+  check(big.speed.y > big.horizon.y,
+        "and are centred on it rather than pinned to the top")
+
+  -- Tapes must not overlap the horizon, or the picture is drawn over by numbers.
+  check(big.speed.x + big.speed.w < big.horizon.x,
+        "the speed tape clears the horizon")
+  check(big.horizon.x + big.horizon.w <= big.alt.x,
+        "and so does the altitude tape")
+
+  check(deck.layout(20, 10).ok == false,
+        "a one-block monitor is too small to instrument, and says so")
+  check(deck.layout(79, 38).ok == true, "a 4x3 monitor is not")
+
+  ------------------------------------------------------------------------------
+  -- Where a button is drawn and what a touch means are one calculation
+  ------------------------------------------------------------------------------
+
+  -- The bug this shape exists to prevent has already happened once in this repo,
+  -- in the remote: picking a ship added a row and every action below it shifted,
+  -- so a tap landed on the button next to the one it looked like.
+  local W, H = 79, 38
+  local layout = deck.layout(W, H)
+
+  for _, action in ipairs(deck.actions) do
+    local found = nil
+    for _, tab in ipairs(ui.tabLayout(deck.labels(), W)) do
+      if tab.name == action.label then found = tab end
+    end
+
+    checkQuiet(found ~= nil, "drawn: " .. action.label)
+    if found then
+      -- Every column the button occupies has to come back as that button, not
+      -- just its middle. A hit test that only worked in the centre would fail
+      -- exactly where a finger lands.
+      for x = found.x, found.x + found.w - 1 do
+        checkQuiet(deck.hit(W, H, x, layout.buttons.y) == action.key,
+                   ("column %d is %s"):format(x, action.key))
+      end
+    end
+  end
+  check(true, "every column of every button reports that button")
+
+  check(deck.hit(W, H, 5, 1) == "page",
+        "touching the header turns the page -- the biggest target there is, and "
+        .. "the safest thing a stray elbow can do")
+  check(deck.hit(W, H, 5, 12) == nil,
+        "and touching an instrument does nothing at all")
+
+  ------------------------------------------------------------------------------
+  -- What a touch actually orders
+  ------------------------------------------------------------------------------
+
+  -- Every one of these goes through flight.command exactly as an order from a
+  -- pocket does. A cockpit button with its own path into the flight state would
+  -- be a way around the conn, the guards and the log at once.
+  check(deck.order("page") == nil, "the page turn is local and orders nothing")
+
+  local up = deck.order("alt+", 10)
+  check(up and up.type == "alt" and up.by == 10,
+        "ALT+ is a relative altitude order", up and up.by)
+
+  local down = deck.order("alt-", 10)
+  check(down and down.by == -10, "and ALT- is the same order the other way",
+        down and down.by)
+
+  check(deck.order("hold").type == "hold", "HOLD holds")
+  check(deck.order("land").type == "land", "LAND lands")
+  check(deck.order("conn").type == "take", "and CONN takes control")
+
+  -- `by`, never `alt`. The two are different orders: `alt` is an absolute
+  -- height and `by` is a nudge from wherever the ship is now, and a deck button
+  -- that sent an absolute 10 would fly the ship into the ground from cruise.
+  check(up.alt == nil and down.alt == nil,
+        "the altitude buttons nudge and never set an absolute height")
+
+  ------------------------------------------------------------------------------
+  -- Rendering, read back off the screen
+  ------------------------------------------------------------------------------
+
+  local function render(v, w, h)
+    local win = window.create(term.current(), 1, 1, w, h, false)
+    local old = term.redirect(win)
+    local ok, err = pcall(deck.draw, v)
+    term.redirect(old)
+
+    local lines = {}
+    for y = 1, h do lines[#lines + 1] = win.getLine(y) end
+    return { ok = ok, err = err, lines = lines, text = table.concat(lines, "\n") }
+  end
+
+  local shown = render(view(), 79, 38)
+  check(shown.ok, "the deck draws", shown.err)
+  check(shown.text:find("Kestrel", 1, true), "with the ship's name on it")
+  check(shown.text:find("CRUISE", 1, true), "and what it is doing")
+  check(shown.text:find("150", 1, true), "the altitude")
+  check(shown.text:find("quarry%-pad"), "and where it is going")
+  check(shown.text:find("PAGE", 1, true) and shown.text:find("HOLD", 1, true),
+        "and the buttons are on it")
+
+  -- The pointer and the bug. A tape without a target marked says where the ship
+  -- is and nothing about where it is meant to be.
+  check(shown.text:find(">%s*150"), "the altitude pointer marks the current value")
+  check(shown.text:find("%*%s*170"), "and a bug marks the one it is climbing to")
+
+  -- A guard is the one thing on this screen that has to be readable across a
+  -- cockpit, so it goes in the header rather than in a corner.
+  local guarded = render(view{ guard = "clearance", state = "climb" }, 79, 38)
+  check(guarded.lines[1]:find("CLEARANCE", 1, true),
+        "a firing guard is named in the header", guarded.lines[1])
+
+  -- A refusal takes the fix line, because "why did nothing happen when I pressed
+  -- that" is worth more for six seconds than a position shown on every other
+  -- screen in the fleet.
+  local refused = render(view{ note = "gizmo has control" }, 79, 38)
+  check(refused.text:find("gizmo has control", 1, true),
+        "a refused order is said out loud on the deck")
+
+  -- Speed cannot be negative, and a scale offering readings that cannot happen
+  -- is one you stop trusting the rest of.
+  local slow = render(view{ speed = 1, targetSpeed = 2 }, 79, 38)
+  check(not slow.text:find("-1[02468]"),
+        "the speed tape does not run below zero on a tall monitor")
+
+  local navigating = render(view{ page = "nav" }, 79, 38)
+  check(navigating.text:find("flight plan", 1, true), "the nav page lists the plan")
+  check(navigating.text:find("ridge%-point"), "every leg of it")
+  check(navigating.text:find("128 70 %-700"), "with where each one actually is")
+  check(navigating.text:find("eta", 1, true), "and what it adds up to")
+  check(navigating.lines[38]:find("PAGE", 1, true),
+        "and the buttons are in the same place as on the flight page",
+        navigating.lines[38])
+
+  -- Anything wrong with the hull, on the one screen aboard with room for it.
+  local sick = render(view{ page = "nav",
+                            problems = { "forward: no optical_sensor attached" } },
+                      79, 38)
+  check(sick.text:find("what is wrong", 1, true),
+        "the nav page carries the hull's complaints")
+  check(sick.text:find("optical_sensor", 1, true), "and names them")
+
+  -- Nothing may be drawn where there is nothing to draw it on.
+  for _, size in ipairs(SIZES) do
+    local r = render(view(), size[1], size[2])
+    checkQuiet(r.ok, ("draws at %dx%d"):format(size[1], size[2]), r.err)
+    for y, line in ipairs(r.lines) do
+      checkQuiet(#line == size[1],
+                 ("%dx%d row %d is exactly the screen width"):format(
+                   size[1], size[2], y))
+    end
+  end
+  check(true, "and it draws at every monitor size without running off the edge")
+
+  -- A monitor too small for instruments says so rather than drawing a horizon
+  -- two rows tall. A blank screen would send somebody looking for a fault that
+  -- is really a one-block monitor.
+  local tiny = render(view(), 20, 10)
+  check(tiny.ok, "a monitor too small to instrument still draws", tiny.err)
+  check(tiny.text:find("too small", 1, true), "and says why")
+  check(tiny.text:find("150", 1, true),
+        "while still showing the altitude, which is the one number that matters")
+
+  -- Missing readings are the normal state of a ship on the pad, and nil is not
+  -- zero: a horizon drawn level because there is no gimbal is a lie.
+  local blank = render({ page = "flight", label = "Kestrel", state = "idle" },
+                       79, 38)
+  check(blank.ok, "a deck with no readings at all still draws", blank.err)
+  check(blank.text:find("%-%-"), "and says so rather than showing zeroes")
+end
+
+--------------------------------------------------------------------------------
 section("sable")
 --------------------------------------------------------------------------------
 
@@ -2631,7 +2889,7 @@ do
     { type = "modem", wireless = true },
     "navigation_table", "altitude_sensor", "thruster_bearing",
     "optical_sensor", "optical_sensor", "docking_connector",
-    "gimbal_sensor", "analogue_joystick" }))
+    "gimbal_sensor", "analogue_joystick", "monitor" }))
   check(full.required == 0, "a fully equipped pilot needs nothing",
         full.required)
   check(select(2, needs.verdict(full, "pilot")) == "ok", "and says so")

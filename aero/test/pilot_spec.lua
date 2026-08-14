@@ -47,6 +47,20 @@ local function check(ok, label, extra)
     say("  FAIL " .. label .. (extra and ("  <" .. tostring(extra) .. ">") or ""))
   end
 end
+--- Counted, and only written out when it fails.
+--
+-- For a loop that asserts the same thing about every row of a screen: forty
+-- identical `ok` lines bury the one line that matters, and `say` rewrites the
+-- whole results file on every one of them.
+local function checkQuiet(ok, label, extra)
+  if ok then
+    pass = pass + 1
+  else
+    fail = fail + 1
+    say("  FAIL " .. label .. (extra and ("  <" .. tostring(extra) .. ">") or ""))
+  end
+end
+
 local function section(name) say("") say(name) end
 
 local loaded = {}
@@ -177,6 +191,23 @@ local function runPilot(opts)
   world.optical("opt0", { range = 40 })
   world.dockPort("dock0")
   if opts.navDark then world.device("nav0").available = false end
+  if opts.monitor then
+    world.monitor("right", opts.monitorW or 79, opts.monitorH or 38)
+  end
+  -- A cockpit with more than one screen: { side, width, height } each. Attached
+  -- in the order given, which is the order the pilot numbers them in.
+  for _, m in ipairs(opts.monitors or {}) do
+    world.monitor(m[1], m[2], m[3])
+  end
+
+  -- A wired modem, for the case where the screens are on a network rather than
+  -- touching the computer. It is a peripheral in its own right and reports
+  -- itself as a non-wireless modem, which is the one thing about it anything
+  -- here cares about.
+  if opts.wiredModem then
+    local d = world.add("wired0", "modem", {})
+    d.methods = { isWireless = function() return false end }
+  end
   _G.peripheral = world.api
 
   fs.delete(config.craftFile)
@@ -209,6 +240,16 @@ local function runPilot(opts)
   end
   net.decode = function(event, a, b, c, d)
     if event == "aero_test_clock" then clock = a return nil end
+
+    -- Break the monitor off the hull mid-run. Taking a contraption apart
+    -- detaches every peripheral on it, so a screen going away is an ordinary
+    -- event -- and it must never be the thing that stops the loop holding the
+    -- ship up.
+    if event == "aero_test_break_monitor" then
+      world.remove("right")
+      return nil
+    end
+
     return realDecode(event, a, b, c, d)
   end
 
@@ -624,6 +665,270 @@ do
   local r = runPilot{ noModem = true, script = { tick(), tick() } }
   check(r.crash == nil, "a pilot with no modem still runs", r.crash)
   check(#r.casts == 0, "and sends nothing")
+end
+
+--------------------------------------------------------------------------------
+section("the flight deck")
+--------------------------------------------------------------------------------
+
+-- A monitor on the contraption. `lib/deck.lua` is tested on its own in spec.lua,
+-- against a view table; what is under test here is the wiring -- that a monitor
+-- actually gets drawn on, and that a touch on it becomes an order through the
+-- same path a pocket computer's order takes.
+--
+-- The monitor mock is backed by a real window, so these read the deck back off
+-- the screen rather than trusting that drawing was attempted.
+
+local function monitorText(r, side)
+  local d = r.world.device(side or "right")
+  return d and d.text() or ""
+end
+
+--- A touch at the middle of a named button, worked out the way the deck does.
+local function touch(w, h, key, side)
+  local deck = require("lib.deck")
+  local ui   = require("lib.ui")
+
+  local label = nil
+  for _, action in ipairs(deck.actions) do
+    if action.key == key then label = action.label end
+  end
+
+  for _, tab in ipairs(ui.tabLayout(deck.labels(), w)) do
+    if tab.name == label then
+      return { "monitor_touch", side or "right",
+               tab.x + math.floor(tab.w / 2), deck.layout(w, h).buttons.y }
+    end
+  end
+  error("no such deck button: " .. tostring(key), 0)
+end
+
+do
+  local r = runPilot{ monitor = true, script = { tick(), tick() } }
+  check(r.crash == nil, "a pilot with a monitor runs", r.crash)
+
+  local screen = monitorText(r)
+  check(screen:find("IDLE", 1, true), "and draws the deck on it", screen:sub(1, 60))
+  check(screen:find("PAGE", 1, true), "with its buttons")
+  check(screen:find("64", 1, true), "and the altitude it is sitting at")
+
+  -- The scale matters: a monitor left at 1.0 is a quarter of the screen, and a
+  -- deck drawn on it would be cut off rather than small.
+  check(r.world.device("right").scale == 0.5,
+        "at a text scale worth drawing on", r.world.device("right").scale)
+end
+
+do
+  -- No monitor at all is the ordinary case, and must cost nothing.
+  local r = runPilot{ script = { tick(), tick() } }
+  check(r.crash == nil, "a pilot with no monitor is unaffected", r.crash)
+end
+
+do
+  -- A monitor broken off the contraption mid-flight. A screen going away must
+  -- never be the thing that stops the loop holding the ship up.
+  local r = runPilot{ monitor = true, script = {
+    tick(),
+    { "aero_test_break_monitor" },
+    clockTo(3), tick(), tick(),
+  } }
+  check(r.crash == nil, "a pilot survives its monitor being broken off", r.crash)
+
+  -- Still flying, and still talking. The deck is the least important thing on
+  -- the ship and must not be able to take anything else down with it.
+  local tlm = lastTelemetry(r)
+  check(tlm ~= nil, "and goes on reporting without it")
+end
+
+do
+  -- The headline: a touch is an order. ALT+ from a parked ship takes off and
+  -- holds, which is exactly what the same order off the wire does.
+  local r = runPilot{ monitor = true, script = {
+    tick(),
+    touch(79, 38, "alt+"),
+    clockTo(2), tick(), tick(),
+  } }
+  check(r.crash == nil, "touching the deck runs", r.crash)
+
+  local tlm = lastTelemetry(r)
+  check(tlm and tlm.flight and tlm.flight.state ~= "idle",
+        "ALT+ on the deck takes a parked ship off, the same as the order would",
+        tlm and tlm.flight and tlm.flight.state)
+  check(tlm and tlm.commanderName == "the flight deck",
+        "and the deck holds the conn, named so a refusal elsewhere can say who",
+        tlm and tlm.commanderName)
+end
+
+do
+  -- ...and it goes through the conn like everything else. Somebody on the ground
+  -- has the ship; the cockpit button is refused, and says so on the screen.
+  local r = runPilot{ monitor = true, script = {
+    tick(),
+    frame(POCKET, { type = "take", who = "gizmo" }),
+    tick(),
+    touch(79, 38, "alt+"),
+    clockTo(2), tick(), tick(),
+  } }
+  check(r.crash == nil, "a refused deck touch runs", r.crash)
+
+  local tlm = lastTelemetry(r)
+  check(tlm and tlm.flight and tlm.flight.state == "idle",
+        "a deck touch is refused while somebody else has control -- the ship "
+        .. "does not move", tlm and tlm.flight and tlm.flight.state)
+  check(tlm and tlm.commanderName == "gizmo",
+        "and the conn stays where it was", tlm and tlm.commanderName)
+
+  check(monitorText(r):find("has control", 1, true),
+        "and the deck says why, rather than looking broken")
+end
+
+do
+  -- Turning the page is local: it orders nothing and cannot be refused, which is
+  -- why the header is the biggest touch target on the screen.
+  local deck = require("lib.deck")
+  local r = runPilot{ monitor = true, script = {
+    tick(),
+    { "monitor_touch", "right", 5, deck.layout(79, 38).header.y },
+    tick(), tick(),
+  } }
+  check(r.crash == nil, "turning the page runs", r.crash)
+  check(monitorText(r):find("flight plan", 1, true),
+        "touching the header turns to the nav page")
+
+  local tlm = lastTelemetry(r)
+  check(tlm and tlm.commanderName == nil,
+        "and takes nobody's control to do it", tlm and tlm.commanderName)
+end
+
+--------------------------------------------------------------------------------
+-- More than one screen
+--------------------------------------------------------------------------------
+
+do
+  -- A cockpit with two monitors of different shapes. Both are drawn, and they
+  -- default to *different* pages -- a second screen showing the same page as the
+  -- first is a second screen wasted, and a deck alongside a nav display is what
+  -- two screens are for.
+  local r = runPilot{ monitors = { { "left", 79, 38 }, { "back", 57, 25 } },
+                      script = { tick(), tick() } }
+  check(r.crash == nil, "a pilot with two monitors runs", r.crash)
+
+  local first, second = monitorText(r, "left"), monitorText(r, "back")
+  check(first:find("Kestrel", 1, true), "the first screen is drawn")
+  check(second:find("Kestrel", 1, true), "and so is the second")
+
+  check(first:find("FLIGHT", 1, true), "the first defaults to the flight deck")
+  check(second:find("NAV", 1, true), "and the second to the nav display",
+        second:sub(1, 60))
+  check(second:find("flight plan", 1, true), "with the plan actually on it")
+
+  -- Each is laid out for its own size. A layout computed once from the first
+  -- monitor and reused would run off the edge of a smaller second one.
+  for _, line in ipairs(r.world.device("back").lines()) do
+    checkQuiet(#line == 57, "the smaller screen is drawn at its own width")
+  end
+  check(true, "each screen is laid out for its own size")
+end
+
+do
+  -- Turning a page turns that screen's page and nobody else's.
+  local r = runPilot{ monitors = { { "left", 79, 38 }, { "back", 57, 25 } },
+                      script = {
+    tick(),
+    -- Touch the header of the second screen, which is showing nav; it should go
+    -- to flight while the first stays where it is.
+    { "monitor_touch", "back", 5, 1 },
+    tick(), tick(),
+  } }
+  check(r.crash == nil, "turning one screen's page runs", r.crash)
+
+  check(monitorText(r, "back"):find("FLIGHT", 1, true),
+        "the touched screen turns")
+  check(monitorText(r, "left"):find("FLIGHT", 1, true),
+        "and the other one is left alone")
+  check(not monitorText(r, "left"):find("flight plan", 1, true),
+        "-- it did not follow the one that was touched")
+end
+
+do
+  -- An order given from the second screen is an order like any other. Nothing
+  -- about the deck should depend on which screen it was pressed on.
+  local r = runPilot{ monitors = { { "left", 79, 38 }, { "back", 57, 25 } },
+                      script = {
+    tick(),
+    touch(57, 25, "alt+", "back"),
+    clockTo(2), tick(), tick(),
+  } }
+  check(r.crash == nil, "commanding from the second screen runs", r.crash)
+
+  local tlm = lastTelemetry(r)
+  check(tlm and tlm.flight and tlm.flight.state ~= "idle",
+        "ALT+ works from whichever screen it is pressed on",
+        tlm and tlm.flight and tlm.flight.state)
+end
+
+do
+  -- Screens on a **wired modem network** rather than bolted to the computer,
+  -- which on an assembled contraption is how a monitor ends up somewhere
+  -- sensible -- the flight computer is rarely where you want to sit.
+  --
+  -- CC gives a networked peripheral a name like `monitor_0` instead of a side,
+  -- and `monitor_touch` delivers that same name. Nothing in the pilot or the
+  -- deck may assume a touch came from one of the computer's six faces.
+  local r = runPilot{ wiredModem = true,
+                      monitors = { { "monitor_0", 79, 38 }, { "monitor_1", 57, 25 } },
+                      script = {
+    tick(),
+    touch(57, 25, "alt+", "monitor_1"),
+    clockTo(2), tick(), tick(),
+  } }
+  check(r.crash == nil, "monitors on a wired network run", r.crash)
+
+  check(monitorText(r, "monitor_0"):find("Kestrel", 1, true),
+        "a networked screen is drawn on")
+  check(monitorText(r, "monitor_1"):find("Kestrel", 1, true), "and so is a second")
+
+  local tlm = lastTelemetry(r)
+  check(tlm and tlm.flight and tlm.flight.state ~= "idle",
+        "and a touch on one commands the ship, name rather than side and all",
+        tlm and tlm.flight and tlm.flight.state)
+
+  -- The wired modem itself is not a radio, and must not be mistaken for one.
+  check(tlm ~= nil, "while the wireless modem goes on carrying telemetry")
+end
+
+do
+  -- Six monitors. Nothing here should have an opinion about how many there are,
+  -- and the pages should keep alternating rather than piling onto the first two.
+  local many = {}
+  for i = 1, 6 do many[i] = { "mon" .. i, 40, 18 } end
+
+  local r = runPilot{ monitors = many, script = { tick(), tick() } }
+  check(r.crash == nil, "six monitors is not a special case", r.crash)
+
+  local decks, navs = 0, 0
+  for i = 1, 6 do
+    local text = monitorText(r, "mon" .. i)
+    checkQuiet(text:find("Kestrel", 1, true) ~= nil, "screen " .. i .. " is drawn")
+    if text:find("flight plan", 1, true) then navs = navs + 1 else decks = decks + 1 end
+  end
+  check(decks == 3 and navs == 3, "and the pages alternate across all of them",
+        ("%d decks, %d navs"):format(decks, navs))
+end
+
+do
+  -- A touch that lands on an instrument rather than a button does nothing at
+  -- all. A deck where any tap commanded something would be unusable in a moving
+  -- cockpit.
+  local r = runPilot{ monitor = true, script = {
+    tick(),
+    { "monitor_touch", "right", 40, 12 },
+    clockTo(2), tick(), tick(),
+  } }
+  local tlm = lastTelemetry(r)
+  check(tlm and tlm.flight and tlm.flight.state == "idle",
+        "touching an instrument commands nothing",
+        tlm and tlm.flight and tlm.flight.state)
 end
 
 --------------------------------------------------------------------------------

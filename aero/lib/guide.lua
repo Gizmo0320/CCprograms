@@ -279,6 +279,112 @@ exactly like one pointed
 at a long drop.
 ]] },
 
+{ title = "The flight deck", body = [[
+Put a MONITOR on the
+contraption and the pilot
+draws a flight deck on
+it, for somebody sitting
+in the ship.
+
+Speed tape on the left,
+altitude on the right,
+artificial horizon
+between them, compass
+under it.
+
+  >   the value now
+  *   the one it is
+      flying to
+  ^   the wanted heading
+
+Two pages. Touch the
+header to swap:
+
+ FLIGHT  attitude, speed,
+         altitude,
+         heading
+ NAV     the plan leg by
+         leg, distances,
+         an ETA, and what
+         is wrong
+
+The buttons are real
+orders:
+
+  ALT+ ALT-  nudge the
+             hold height
+  HOLD LAND  what they say
+  CONN       take control
+
+They go through the same
+conn as an order from the
+pocket, so the deck and
+the ground cannot fight
+over one ship. A button
+that would be refused is
+drawn dim. A refusal is
+said on the bottom line.
+
+The header turns red and
+names the guard when one
+fires.
+
+HOW BIG
+
+Two blocks by two is the
+minimum. One block tall
+is nine rows however wide
+it is, which is not
+enough.
+
+  2x2  36x24  minimum
+  3x2  57x24  comfortable
+  4x3  78x38  roomy
+
+Three tall adds the conn
+row. Past that the extra
+goes to the horizon: the
+tapes stop at 15 rows so
+the scales stay readable.
+
+The pilot sets the text
+scale to 0.5 itself.
+
+Too small, and it says so
+rather than going blank.
+
+MORE THAN ONE SCREEN
+
+Put up as many as you
+like. Each is drawn for
+its own size.
+
+They default apart: the
+first is the deck, the
+second is nav, the rest
+alternate. Touching a
+header turns only that
+screen.
+
+They can be bolted to the
+computer or on a wired
+modem network -- which is
+usually how one ends up
+somewhere you want to
+sit. Both the monitor and
+the computer must be part
+of the assembled
+contraption.
+
+A monitor is optional.
+Break one off in flight
+and the ship carries on.
+
+Below about 36x16 there
+is no room to instrument
+and it says so.
+]] },
+
 { title = "The hull file", body = [[
 /craft.cfg says what the
 ship is made of. Update

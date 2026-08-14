@@ -42,5 +42,6 @@ lib/boot.lua
 lib/terrain.lua
 lib/sable.lua
 lib/ui.lua
+lib/deck.lua
 lib/guide.lua
 lib/flight.lua

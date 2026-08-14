@@ -196,6 +196,57 @@ function ui.tapeRows(value, rows, step)
   return out
 end
 
+--- A vertical tape: a scale that scrolls past a fixed pointer in the middle.
+--
+-- The instrument that makes an altitude readable at a glance. A number tells you
+-- where you are; a tape tells you where you are *going*, and how fast, without
+-- reading anything.
+--
+-- `target` draws a bug against the row it falls on. Deliberately drawn even when
+-- it is off the end of the scale -- clamped to the top or bottom row -- because a
+-- bug that vanishes when the ship is a long way from its target is missing at
+-- exactly the moment it is worth seeing.
+function ui.tape(x, y, w, h, value, target, step, colour, min)
+  ui.fill(x, y, w, h, ui.theme.bg)
+
+  if value == nil then
+    ui.at(x, y + math.floor(h / 2), ui.centre("--", w), ui.theme.dim)
+    return
+  end
+
+  local rows = ui.tapeRows(value, h, step)
+  local middle = math.floor(h / 2)
+
+  for i, row in ipairs(rows) do
+    -- Below the floor there is nothing to draw. A speed tape counting down to
+    -- minus sixteen is offering a reading that cannot happen, and a scale with
+    -- impossible numbers on it is one you stop trusting the rest of.
+    local drawable = not (min and row.value < min)
+
+    local here = row.here
+    local bug = false
+
+    if target then
+      -- Which row this target belongs on, in the same arithmetic tapeRows used.
+      local offset = (target - value) / step
+      local at = middle - offset
+      bug = math.floor(at + 0.5) == (i - 1)
+
+      -- Off the scale entirely: pin it to whichever end it is past.
+      if at < 0 and i == 1 then bug = true end
+      if at > h - 1 and i == h then bug = true end
+    end
+
+    if drawable then
+      local mark = here and ">" or (bug and "*" or " ")
+      ui.at(x, y + i - 1,
+            ui.fit(("%s%s"):format(mark, ("%5d"):format(row.value)), w, true),
+            here and ui.theme.select
+              or (bug and ui.theme.ok or (colour or ui.theme.dim)))
+    end
+  end
+end
+
 --- A compass strip centred on `heading`, `w` characters wide. Pure.
 --
 -- Returns the string. Degrees per character is fixed at 3 so the strip covers

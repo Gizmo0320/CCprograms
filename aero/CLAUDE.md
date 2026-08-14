@@ -411,6 +411,56 @@ the ship is facing. `test/mockperipheral.lua` composes the quaternion from the
 ship's angles longhand rather than sharing the code, so a disagreement between
 the two is a test failure and not a shared mistake.
 
+### The flight deck
+
+`lib/deck.lua` draws a monitor on the contraption, for somebody sitting in the
+ship. `pilot.lua`'s own terminal panel stays what it was -- compact, for standing
+at the computer -- because the two answer different questions and a 4x3 monitor
+is six times the area, which is worth designing for rather than scaling into.
+
+Three rules, all of them ones this repo has already learned somewhere else:
+
+- **Layout arithmetic is pure and separate from drawing.** `deck.layout` returns
+  rectangles and touches nothing. Every size a monitor comes in is asserted to
+  put every element on the screen, which is the kind of off-by-one that is
+  otherwise found by looking at a hull in the air.
+- **Where a button is drawn and what a touch means are one function**, through
+  `ui.tabLayout`/`ui.tabAt`. The remote suite has a case for exactly this bug
+  after picking a ship shifted every action below it.
+- **The view is a plain table assembled by `pilot.lua`.** `lib/deck.lua` reaches
+  into neither `hull` nor `flight`, which is what lets the whole screen be
+  rendered into a window by the suite -- and what stops a drawing bug being a
+  flying bug.
+
+The horizon fills the height and the tapes deliberately do not. Both were tried
+the other way: full-height tapes on a 4x3 monitor ran the speed scale down to
+minus sixteen -- a reading that cannot happen, on a scale nobody then trusts --
+and capping the whole instrument block instead left a twelve-row hole under it.
+
+**The page is per monitor, not per ship.** That is a reversal of the first
+version, which held one page for the whole hull on the reasoning that two screens
+disagreeing would be worse than one. The reasoning was about the wrong case:
+right for a single monitor, exactly backwards for two, because the second screen
+then shows a copy of the first. They default apart -- deck, nav, alternating --
+so a second monitor is worth bolting on without touching anything, and a header
+turns only the screen it was touched on.
+
+Monitors are found by type over `peripheral.getNames`, so one on a **wired modem
+network** works with no extra code: CC names it `monitor_0` rather than a side
+and delivers `monitor_touch` under that name, and nothing in `pilot.lua` or
+`lib/deck.lua` assumes a touch came from one of the computer's six faces. The
+view is assembled **once per sweep** and only `page` differs per screen -- it
+walks the plan and every control, and doing that per monitor would make a second
+screen cost twice as much on the computer that is also flying the ship.
+
+**Touch goes through `handle` like everything else.** That function grew a
+`reply` parameter rather than a second command path: the deck passes its own, so
+a refusal lands on the monitor instead of on the wire, and the conn, the guards
+and the log stay in exactly one place. The deck holds the conn under the ship's
+own computer id, so `flight.mayCommand` refuses it for the same reasons and in
+the same words as it refuses anybody else -- and a button that would be refused
+is drawn dim before it is pressed.
+
 ### The interface
 
 `lib/ui.lua` is a deliberate departure from the other two suites, which

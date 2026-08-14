@@ -39,6 +39,7 @@ local nav         = require("lib.nav")
 local flight      = require("lib.flight")
 local terrain     = require("lib.terrain")
 local ui          = require("lib.ui")
+local deck        = require("lib.deck")
 local boot        = require("lib.boot")
 
 local pilot = {
@@ -58,6 +59,19 @@ local pilot = {
   target    = nil,       -- what the data link was last told, to avoid rewriting it
   gps       = nil,
   lastState = nil,
+
+  -- Which page each monitor is showing, keyed by side.
+  --
+  -- Per monitor rather than per ship, which is a reversal: it was one value for
+  -- the whole hull on the reasoning that two screens disagreeing about the page
+  -- would be worse than having one. That reasoning was about the wrong case. It
+  -- is right for one monitor and exactly backwards for two, because a second
+  -- screen showing the same page as the first is a second screen wasted -- and a
+  -- deck alongside a nav display is what a cockpit with two screens is *for*.
+  --
+  -- So they default apart (see `pageFor`) and each turns on its own.
+  pages     = {},
+  deckNote  = nil,       -- the answer to the last thing somebody touched
 }
 
 local function now() return os.clock() end
@@ -211,6 +225,163 @@ local function redraw()
   end
 
   ui.paint(ui.theme.text, ui.theme.bg)
+end
+
+--------------------------------------------------------------------------------
+-- The flight deck
+--------------------------------------------------------------------------------
+
+-- A monitor on the contraption, read from the pilot's seat. The terminal panel
+-- above is for standing at the computer; this is for flying, and it is a
+-- different screen rather than the same one stretched -- see lib/deck.lua.
+
+--- Everything the deck draws, as a plain table.
+--
+-- Assembled here and passed in, so `lib/deck.lua` reaches into neither `hull` nor
+-- `flight`. That is what lets the whole screen be rendered into a window by the
+-- test suite, and it is what stops a drawing bug turning into a flying one.
+--- Every monitor on the hull, in attachment order.
+local function monitors()
+  local out = {}
+  local ok, names = pcall(peripheral.getNames)
+  if not ok then return out end
+
+  for _, side in ipairs(names) do
+    local okType, kind = pcall(peripheral.getType, side)
+    if okType and kind == "monitor" then out[#out + 1] = side end
+  end
+  return out
+end
+
+--- Which page a monitor is showing, choosing one the first time it is seen.
+--
+-- The default is what makes a second monitor worth bolting on without touching
+-- anything: the first screen is the flight deck, the second is the nav display,
+-- and any after that alternate. Somebody who wants two of the same can have it
+-- by touching a header -- but nobody should have to, to get the useful
+-- arrangement.
+--
+-- `index` is the monitor's place in attachment order, which is stable for as
+-- long as the contraption is: assembling one attaches its peripherals in a
+-- consistent order, and a monitor added later lands at the end rather than
+-- renumbering the ones already there.
+local function pageFor(side, index)
+  if not pilot.pages[side] then
+    pilot.pages[side] = deck.pages[((index - 1) % #deck.pages) + 1]
+  end
+  return pilot.pages[side]
+end
+
+local function deckView()
+  local fix  = pilot.fix
+  local goal = pilot.fl.goal or {}
+
+  local controls = {}
+  for _, name in ipairs(hull.order) do
+    local held = hull.current[name] or {}
+    local value = held.throttle or held.signal or held.left
+    if value ~= nil then
+      controls[#controls + 1] = { name = name, value = value }
+    end
+  end
+
+  local legs = {}
+  local current = nav.current(pilot.fl.plan)
+  for _, leg in ipairs((pilot.fl.plan or {}).legs or {}) do
+    legs[#legs + 1] = {
+      name = leg.name,
+      distance = nav.distance(fix, leg),
+      current = (current ~= nil and leg.name == current.name),
+      x = leg.x, y = leg.y, z = leg.z,
+    }
+  end
+
+  -- Whether the person at this screen may command *from this seat*. The deck
+  -- holds the conn under the ship's own id, exactly as a pocket computer holds
+  -- it under its own -- so a deck button is refused while somebody on the ground
+  -- has control, and the button is drawn dim to say so before it is pressed.
+  local may = flight.mayCommand(pilot.fl, os.getComputerID(), now())
+
+  return {
+    -- Filled in per monitor by drawDeck: one view is assembled for the whole
+    -- sweep and only the page differs between screens.
+    page = nil,
+    label = label(),
+    state = pilot.fl.state,
+    guard = pilot.fl.guard,
+
+    alt = fix.alt, targetAlt = goal.alt,
+    speed = fix.speed, targetSpeed = goal.speed,
+    heading = fix.heading, targetHeading = goal.heading,
+    vs = fix.vs, pitch = fix.pitch, roll = fix.roll, tilt = fix.tilt,
+    clearance = fix.clearance, ahead = fix.ahead,
+
+    fuel = fix.fuel, capacity = fix.capacity, burn = fix.burn,
+    controls = controls,
+    legs = legs,
+    home = pilot.home,
+
+    -- Everything hull.load and every remount since had to complain about. The
+    -- nav page is the only screen on the ship with room for it, and a warning
+    -- that appeared once in a boot log and was scrolled past a second later is
+    -- a warning nobody has ever read.
+    problems = hull.problems,
+
+    commander = pilot.fl.commanderName,
+    mayCommand = may,
+
+    -- A refusal, for a few seconds. Expired here rather than on a timer: the
+    -- deck redraws every heartbeat anyway, and a timer for a cosmetic message is
+    -- a timer that can be confused with the control loop's.
+    note = (pilot.deckNote and now() < pilot.deckNote.until_)
+           and pilot.deckNote.text or nil,
+
+    x = fix.x, y = fix.y, z = fix.z,
+    usable = fix.usable, assembled = fix.assembled,
+    source = instruments.age(fix, now()),
+  }
+end
+
+--- Draw the deck to every attached monitor.
+--
+-- `term.redirect` rather than a second rendering path, the same choice
+-- `server.lua` makes for its dashboard and for the same reason: nobody is
+-- looking at two screens at once, so a bug in the copy nobody watches would
+-- survive forever.
+--
+-- Wrapped in `pcall` per monitor. A monitor is on the contraption, so it is
+-- detached the moment the ship is taken apart -- and a screen going away must
+-- never be the thing that stops the loop holding the ship up.
+local function drawDeck()
+  local screens = monitors()
+  if #screens == 0 then return end
+
+  -- Assembled once for the whole sweep however many screens there are. It walks
+  -- the plan and every control, and doing that per monitor would make a second
+  -- screen cost twice as much on the one computer that is also flying the ship.
+  local view = deckView()
+
+  for index, side in ipairs(screens) do
+    -- Per monitor, so one screen failing cannot stop the next from being drawn
+    -- -- and so a monitor detached halfway through this loop, which is what
+    -- taking a contraption apart does, costs nothing at all.
+    pcall(function()
+      local mon = peripheral.wrap(side)
+      if not mon then return end
+
+      mon.setTextScale(0.5)
+      view.page = pageFor(side, index)
+
+      local old = term.redirect(mon)
+      local drawn = pcall(deck.draw, view)
+      term.redirect(old)
+
+      -- Deliberately not reported. A monitor that throws has almost always just
+      -- been broken off the hull, which is an ordinary thing to do to a ship and
+      -- not a fault worth a line in the log every heartbeat.
+      return drawn
+    end)
+  end
 end
 
 --------------------------------------------------------------------------------
@@ -429,6 +600,7 @@ local function flyTask()
         beat = t
         net.broadcast(telemetry())
         redraw()
+        drawDeck()
       end
 
     elseif event_ == "terminate" then
@@ -448,7 +620,17 @@ local function sanitise(name)
   return tostring(name or ""):gsub("[^%w%-_]", ""):sub(1, 24)
 end
 
-local function handle(from, msg)
+--- Take an order.
+--
+-- `reply` is how the answer gets back to whoever asked. It defaults to the
+-- network, and the flight deck passes its own -- which is the whole reason this
+-- takes a function rather than calling `net.send` directly. A touch on the
+-- monitor is an order like any other and must go through this one path: the
+-- conn, the guards and the log are all here, and a second way in would be a way
+-- around all three.
+local function handle(from, msg, reply)
+  reply = reply or function(answer) net.send(from, answer) end
+
   local ctx = {
     waypoints = pilot.waypoints,
     limits    = hull.limits,
@@ -489,14 +671,14 @@ local function handle(from, msg)
 
   ------------------------------------------------------------------------------
   if msg.type == "hull?" then
-    net.send(from, { type = "hull", label = label(), hull = hull.describe() })
+    reply({ type = "hull", label = label(), hull = hull.describe() })
     return
   end
 
   ------------------------------------------------------------------------------
   if msg.type == "tune" then
     if type(msg.gains) ~= "table" then
-      net.send(from, { type = "error", reason = "no gains" })
+      reply({ type = "error", reason = "no gains" })
       return
     end
 
@@ -504,12 +686,12 @@ local function handle(from, msg)
     -- would be the conn problem with a slower fuse.
     local may, held = flight.mayCommand(pilot.fl, ctx.from, now())
     if not may then
-      net.send(from, { type = "error", reason = held })
+      reply({ type = "error", reason = held })
       return
     end
     pilot.ap.gains = autopilot.gains(msg.gains)
     autopilot.reset(pilot.ap)
-    net.send(from, { type = "ack", of = "tune" })
+    reply({ type = "ack", of = "tune" })
     event({ what = "tune", to = "gains", why = "manual" })
     return
   end
@@ -521,7 +703,7 @@ local function handle(from, msg)
     -- replacement disk. `update` is a different matter, below.
     local name = sanitise(msg.name)
     if name == "" then
-      net.send(from, { type = "error", reason = "bad name" })
+      reply({ type = "error", reason = "bad name" })
       return
     end
     os.setComputerLabel(name)
@@ -537,19 +719,19 @@ local function handle(from, msg)
     -- looking for a particular ship among six.
     sable.setName(name)
 
-    net.send(from, { type = "ack", of = "rename" })
+    reply({ type = "ack", of = "rename" })
     return
   end
 
   ------------------------------------------------------------------------------
   if msg.type == "update" then
     if flight.busy(pilot.fl) then
-      net.send(from, { type = "error", reason = "flying" })
+      reply({ type = "error", reason = "flying" })
       return
     end
     pilot.update = { branch = msg.branch, repo = msg.repo }
     pilot.stop = true
-    net.send(from, { type = "ack", of = "update" })
+    reply({ type = "ack", of = "update" })
     return
   end
 
@@ -557,15 +739,75 @@ local function handle(from, msg)
   -- Everything else is a flight order.
   local ok, result = flight.command(pilot.fl, msg, ctx, now())
   if not ok then
-    net.send(from, { type = "error", reason = result })
+    reply({ type = "error", reason = result })
     return
   end
 
   autopilot.reset(pilot.ap)
   save()
   state.flush(now())     -- a new plan is worth one disk hit immediately
-  net.send(from, { type = "ack", of = msg.type })
+  reply({ type = "ack", of = msg.type })
   if result then event(result) end
+end
+
+--- Somebody in the cockpit pressed something.
+--
+-- The size comes from the monitor that was actually touched rather than from any
+-- remembered layout: a contraption may carry two monitors of different shapes,
+-- and `deck.hit` has to be asked about the one under the hand.
+local function touched(side, x, y)
+  local ok, mon = pcall(peripheral.wrap, side)
+  if not ok or type(mon) ~= "table" then return end
+
+  local okSize, w, h = pcall(mon.getSize)
+  if not okSize or not w then return end
+
+  local key = deck.hit(w, h, x, y)
+  if not key then return end
+
+  if key == "page" then
+    -- This screen's page and nobody else's. Two monitors in one cockpit are a
+    -- deck and a nav display, not two copies of whichever was touched last.
+    local at = 1
+    for index, name in ipairs(monitors()) do
+      if name == side then at = index end
+    end
+
+    local current = pageFor(side, at)
+    local nextAt = 1
+    for i, name in ipairs(deck.pages) do
+      if name == current then nextAt = (i % #deck.pages) + 1 end
+    end
+
+    pilot.pages[side] = deck.pages[nextAt]
+    pilot.deckNote = nil
+    drawDeck()
+    return
+  end
+
+  local order = deck.order(key, config.altStep)
+  if not order then return end
+
+  -- Stamped with this computer's own id, so the deck holds the conn exactly as a
+  -- pocket computer holds it under its own -- and `flight.mayCommand` can refuse
+  -- the deck for the same reasons and with the same words. `who` is what a
+  -- refusal names somewhere else, and "the flight deck" is a great deal more use
+  -- than a computer number when the argument is about who has the ship.
+  order.sender = os.getComputerID()
+  order.who = "the flight deck"
+
+  handle(os.getComputerID(), order, function(answer)
+    -- Only failures are worth saying. An order that worked is visible in the
+    -- state on the screen a tenth of a second later, and a deck that announced
+    -- every success would be a deck with a message permanently on it.
+    if answer and answer.type == "error" then
+      pilot.deckNote = { text = tostring(answer.reason), until_ = now() + 6 }
+    else
+      pilot.deckNote = nil
+    end
+  end)
+
+  drawDeck()
 end
 
 local function listenerTask()
@@ -590,6 +832,15 @@ local function listenerTask()
       if ok and changed then
         event({ what = "hardware", why = e == "peripheral" and "attached" or "detached" })
       end
+
+      -- A monitor that has just been attached is blank until something draws on
+      -- it, and the next draw is a whole heartbeat away.
+      pcall(drawDeck)
+
+    elseif e == "monitor_touch" then
+      -- Somebody in the cockpit pressed something. `a` is the monitor's side and
+      -- `b`, `c` are the column and row on it.
+      pcall(touched, a, b, c)
 
     else
       local from, msg = net.decode(e, a, b, c, d)

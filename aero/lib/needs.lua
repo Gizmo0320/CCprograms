@@ -74,6 +74,12 @@ needs.roles = {
         what = "analogue joystick",
         why = "so a person can take control by hand",
         without = "the autopilot is the only pilot" },
+
+      { kind = "monitor", tier = "optional",
+        what = "monitor",
+        why = "a flight deck in the cockpit: horizon, tapes, compass, and "
+           .. "touch controls for altitude, hold and landing",
+        without = "the instruments are only on the flight computer's own screen" },
     },
   },
 

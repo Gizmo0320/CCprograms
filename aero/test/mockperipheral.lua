@@ -419,6 +419,45 @@ function mock.new(opts)
     return d
   end
 
+  --- A monitor, backed by a real window so it can actually be redirected to.
+  --
+  -- Everything else in this file is a Create Aeronautics peripheral with a
+  -- handful of methods. A monitor is a whole terminal: `pilot.lua` draws the
+  -- flight deck by redirecting to it, so a stub with a `getSize` would prove
+  -- nothing at all. Backing it with a window means the case can read the deck
+  -- back off the screen afterwards, which is the only way to know it was drawn
+  -- rather than merely attempted.
+  function world.monitor(side, w, h)
+    w, h = w or 79, h or 38
+
+    local win = window.create(term.current(), 1, 1, w, h, false)
+    local d = world.add(side, "monitor", { window = win, width = w, height = h })
+
+    d.methods = {}
+    for name, fn in pairs(win) do
+      if type(fn) == "function" then d.methods[name] = fn end
+    end
+
+    -- The one method a monitor has that a window does not. Recorded, because
+    -- setting the text scale is how the deck gets a screen worth drawing on and
+    -- a version that forgot would silently draw a quarter of one.
+    d.methods.setTextScale = function(scale)
+      record(d, "setTextScale", scale)
+      d.scale = scale
+    end
+    d.methods.getTextScale = function() return d.scale or 1 end
+
+    function d.lines()
+      local out = {}
+      for y = 1, h do out[#out + 1] = win.getLine(y) end
+      return out
+    end
+
+    function d.text() return table.concat(d.lines(), "\n") end
+
+    return d
+  end
+
   function world.joystick(side)
     local d = world.add(side, "analogue_joystick",
       { tilt = { x = 0, z = 0, magnitude = 0, active = false, held = false } })
