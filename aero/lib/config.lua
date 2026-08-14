@@ -11,10 +11,14 @@
 
 local config = {}
 
--- Stamped into the boot log and shown by `setup`, so "which version is this
--- computer running" is answerable without diffing files against GitHub. Bumped
--- by hand when something changes that a running network would notice.
-config.version = "1.0"
+-- Stamped into the boot log, written into /aero.cfg by `configure`, and compared
+-- against the branch by `install check` -- so "which version is this computer
+-- running" is answerable without diffing files against GitHub.
+--
+-- Bumped by hand when something changes that a running network would notice, and
+-- kept in step with the `# version` line in manifest.txt, which is the copy the
+-- installer can read before it has downloaded anything.
+config.version = "1.1"
 
 
 -- The modem channel every program on this network talks on: the port. A modem
@@ -63,7 +67,7 @@ config.stateFile = "/aero.state"
 -- The server's: roster, waypoints, pads, routes, log.
 config.fleetFile = "/fleet.state"
 
--- Where probe.lua writes what it found. Plain text, meant to be read by a human
+-- Where the Hardware pane writes a full survey. Plain text, meant for a human
 -- squinting at a hull that will not fly.
 config.surveyFile = "/aero.survey.txt"
 

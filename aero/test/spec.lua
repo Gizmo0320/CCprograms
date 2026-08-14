@@ -702,17 +702,27 @@ do
         ("%d in '%s'"):format(widest, tostring(where)))
 
   -- The topics a player in trouble will actually look for.
-  for _, word in ipairs({ "probe", "craft.cfg", "balloon", "hold = true",
+  for _, word in ipairs({ "configure", "craft.cfg", "balloon", "hold = true",
                           "wireless modem", "tether", "guard", "bingo",
                           "hover", "waypoint",
                           -- The two failures players actually hit, in the
                           -- words they would search for rather than the words
                           -- the fix is described in.
-                          "probe --eyes", "assembl", "attach", "clearance" }) do
+                          "optical sensors", "assembl", "attach", "clearance" }) do
     checkQuiet(#guide.search(word) > 0, "the manual mentions " .. word)
   end
-  check(#guide.search("probe") > 0 and #guide.search("bingo") > 0,
+  check(#guide.search("configure") > 0 and #guide.search("bingo") > 0,
         "and covers what somebody in trouble would search for")
+
+  -- The two programs that were folded into `configure`. A manual that still
+  -- tells somebody to run `probe` is worse than one that does not mention it:
+  -- the command is gone, so the instruction is a dead end at exactly the moment
+  -- it is being followed.
+  for _, gone in ipairs({ "probe", "setup pilot", "probe --eyes" }) do
+    checkQuiet(#guide.search(gone) == 0,
+               "and no longer sends anyone to " .. gone)
+  end
+  check(true, "the manual does not name a program that was removed")
 
   -- Search.
   check(#guide.search("") == #guide.topics,
@@ -2728,26 +2738,242 @@ do
 end
 
 --------------------------------------------------------------------------------
+section("cfg -- what counts as configured")
+--------------------------------------------------------------------------------
+
+-- The rules that decide whether a computer is allowed to start, tested without a
+-- peripheral, a filesystem or a screen. They live in one module precisely so
+-- they can be: four programs used to each have their own opinion about what a
+-- broken configuration looked like, and a ship could satisfy all four and still
+-- not fly.
+--
+-- The distinction under test is the one that matters most, and the one that
+-- would be catastrophic to get backwards: **configuration gates a boot, and
+-- hardware never does.**
+do
+  local cfg = require("lib.cfg")
+
+  local FLYABLE = {
+    name = "Kestrel",
+    controls = {
+      lift = { kind = "bearing", peripheral = "thruster_bearing_0", group = "all" },
+      main = { kind = "bearing", peripheral = "thruster_bearing_1", group = "all" },
+    },
+    instruments = { nav = "navigation_table_0", alt = "altitude_sensor_0" },
+    limits = { cruise = 10, climb = 3, descend = 2, clearance = 8 },
+    gains = { hover = 0.5 },
+    mix = { { demand = "lift", control = "lift", as = "throttle" },
+            { demand = "forward", control = "main", as = "throttle" } },
+  }
+
+  local ATTACHED = {
+    modem = { "top" },
+    navigation_table = { "navigation_table_0" },
+    altitude_sensor  = { "altitude_sensor_0" },
+    thruster_bearing = { "thruster_bearing_0", "thruster_bearing_1" },
+    optical_sensor   = { "optical_sensor_0", "optical_sensor_1" },
+  }
+
+  local function copy(t)
+    local out = {}
+    for k, v in pairs(t) do out[k] = v end
+    return out
+  end
+
+  local function mentions(problems, text)
+    for _, p in ipairs(problems) do
+      if p.text:find(text, 1, true) then return true end
+    end
+    return false
+  end
+
+  -- Never configured stops every role, ahead of everything else, because it is
+  -- the one problem whose answer is "run the wizard" rather than "fix a field".
+  for _, role in ipairs({ "pilot", "server", "beacon", "remote" }) do
+    local problems = cfg.check(role, {
+      configured = false, craft = FLYABLE, attached = ATTACHED,
+      beacon = { name = "pad", x = 1, y = 2, z = 3 },
+    })
+    check(cfg.blocking(problems),
+          "a " .. role .. " nobody has configured is stopped")
+  end
+
+  local ready = cfg.check("pilot", {
+    configured = true, craft = FLYABLE, attached = ATTACHED })
+  check(not cfg.blocking(ready), "a configured pilot with a flyable hull starts")
+
+  ------------------------------------------------------------------------------
+  -- The one that would ground the entire fleet if it went the other way.
+  ------------------------------------------------------------------------------
+  local bare = cfg.check("pilot", {
+    configured = true, craft = FLYABLE, attached = {} })
+  check(not cfg.blocking(bare),
+        "a pilot with nothing attached still starts -- assembling the "
+        .. "contraption is what attaches its peripherals, so this is the normal "
+        .. "state of every ship until the moment it is assembled")
+  check(mentions(bare, "wireless modem"),
+        "though the missing hardware is still reported")
+
+  for _, p in ipairs(bare) do
+    check(p.severity ~= "bad",
+          "and no hardware problem is ever severe enough to stop a boot: "
+          .. p.text)
+  end
+
+  ------------------------------------------------------------------------------
+  -- What does stop one.
+  ------------------------------------------------------------------------------
+  check(cfg.blocking(cfg.check("pilot", {
+          configured = true, craft = nil, attached = ATTACHED })),
+        "a pilot with no craft file at all is stopped")
+
+  local noControls = copy(FLYABLE)
+  noControls.controls = {}
+  check(cfg.blocking(cfg.check("pilot", {
+          configured = true, craft = noControls, attached = ATTACHED })),
+        "and one with no controls -- a flight computer wired to nothing")
+
+  local noMix = copy(FLYABLE)
+  noMix.mix = {}
+  check(cfg.blocking(cfg.check("pilot", {
+          configured = true, craft = noMix, attached = ATTACHED })),
+        "and one whose controls are never driven")
+
+  local noLift = copy(FLYABLE)
+  noLift.mix = { { demand = "forward", control = "main", as = "throttle" } }
+  local liftless = cfg.check("pilot", {
+    configured = true, craft = noLift, attached = ATTACHED })
+  check(cfg.blocking(liftless),
+        "and one where nothing in the mix drives lift -- which is the "
+        .. "difference between a ship and a falling building")
+  check(mentions(liftless, "hold itself up"), "and it says which it is")
+
+  ------------------------------------------------------------------------------
+  -- Warnings, which report and do not block.
+  ------------------------------------------------------------------------------
+  local switchedOff = copy(FLYABLE)
+  switchedOff.instruments = { nav = false, alt = "altitude_sensor_0" }
+  local off = cfg.check("pilot", {
+    configured = true, craft = switchedOff, attached = ATTACHED })
+  check(mentions(off, "switched off"),
+        "a role set to false while its peripheral is attached is called out -- "
+        .. "the bug the whole configurator was first built for")
+  check(not cfg.blocking(off),
+        "but it does not stop the ship: it flies, with one instrument ignored")
+
+  -- A name that is not on this hull. Checked against the actual list rather
+  -- than merely against the kind: naming optical_sensor_3 on a ship that has 0
+  -- and 1 is a typo that costs a whole instrument, and "well, *an* optical
+  -- sensor is attached" is not an answer to it.
+  local typo = copy(FLYABLE)
+  typo.instruments = { nav = "navigation_table_0", ground = "optical_sensor_3" }
+  local mistyped = cfg.check("pilot", {
+    configured = true, craft = typo, attached = ATTACHED })
+  check(mentions(mistyped, "optical_sensor_3"),
+        "an instrument naming a peripheral this hull does not have is called "
+        .. "out, even though other sensors of that kind are attached")
+  check(not cfg.blocking(mistyped),
+        "and it is still only a warning -- the ship flies, one sensor short")
+
+  local eyes = cfg.check("pilot", {
+    configured = true, craft = FLYABLE, attached = ATTACHED })
+  check(mentions(eyes, "optical sensors"),
+        "two optical sensors with neither role named is called out, because one "
+        .. "named and one guessed is even odds on the terrain guard")
+
+  ------------------------------------------------------------------------------
+  -- The other roles.
+  ------------------------------------------------------------------------------
+  check(cfg.blocking(cfg.check("beacon", { configured = true, attached = ATTACHED })),
+        "a beacon with no coordinates is not a waypoint, and is stopped")
+  check(cfg.blocking(cfg.check("beacon", { configured = true, attached = ATTACHED,
+          beacon = { name = "quarry", x = 1, y = 2 } })),
+        "and so is one that is missing a single axis")
+  check(not cfg.blocking(cfg.check("beacon", { configured = true,
+          attached = ATTACHED, beacon = { name = "quarry", x = 1, y = 2, z = 3 } })),
+        "one that knows where it stands is let through")
+
+  check(not cfg.blocking(cfg.check("server", { configured = true, attached = ATTACHED })),
+        "a configured tower needs nothing beyond its network settings")
+  check(not cfg.blocking(cfg.check("remote", { configured = true, attached = ATTACHED })),
+        "and neither does a pocket computer")
+
+  ------------------------------------------------------------------------------
+  -- Names for roles, because people say "tower" and mean "server".
+  ------------------------------------------------------------------------------
+  check(cfg.role("tower") == "server", "tower is the server")
+  check(cfg.role("ship") == "pilot", "a ship is a pilot")
+  check(cfg.role("waypoint") == "beacon", "a waypoint is a beacon")
+  check(cfg.role("  PILOT ") == "pilot", "and it is not fussy about spacing or case")
+  check(cfg.role("hovercraft") == nil, "something it does not know is nil, not a guess")
+
+  ------------------------------------------------------------------------------
+  -- The serialiser, which is the round trip that used to belong to probe.lua.
+  --
+  -- Whatever this writes has to be a file lib/hull can load, because the
+  -- alternative is a syntax error discovered on an assembled contraption with no
+  -- working copy of anything to fall back on.
+  ------------------------------------------------------------------------------
+  local hull = require("lib.hull")
+  local lines = cfg.craftLines(FLYABLE)
+  writeFile("/test-craft.cfg", table.concat(lines, "\n") .. "\n")
+
+  local reloaded = dofile("/test-craft.cfg")
+  check(type(reloaded) == "table", "what the writer produces is loadable Lua")
+  check(reloaded.name == "Kestrel", "and it keeps the name")
+  check(reloaded.controls.lift.peripheral == "thruster_bearing_0",
+        "and every control")
+  check(#reloaded.mix == 2, "and the mix", #reloaded.mix)
+
+  -- The trap that made probe.lua write a permanent absence. A role with nothing
+  -- attached must be left *out*, not written as `false`: absent is found
+  -- automatically the moment the block appears, and `false` means never look
+  -- again.
+  local sparse = copy(FLYABLE)
+  sparse.instruments = { nav = "navigation_table_0", gimbal = false }
+  writeFile("/test-craft.cfg",
+            table.concat(cfg.craftLines(sparse), "\n") .. "\n")
+  local sparseBack = dofile("/test-craft.cfg")
+  check(sparseBack.instruments.alt == nil,
+        "an instrument that was never set is left out of the file entirely")
+  check(sparseBack.instruments.gimbal == false,
+        "and one deliberately switched off keeps its false")
+
+  fs.delete("/test-craft.cfg")
+end
+
+--------------------------------------------------------------------------------
 section("configure")
 --------------------------------------------------------------------------------
 
--- The configurator, driven through its real event loop. What matters is the two
--- things it exists for: it opens by saying what is wrong with the configuration
--- you already have, and it can swap which bearing is lift -- the one decision
--- nothing can make by looking, and the one that flies a ship into the ground
--- when it is wrong.
+-- The configurator, driven through its real event loop. It is now the only way
+-- to set this program up -- it absorbed the installer's questions, probe.lua's
+-- hull generation and setup.lua's hardware checklist -- so what is under test is
+-- the whole of that.
+--
+-- Two modes, and the difference between them is the point:
+--
+--   * a computer nobody has configured gets the **wizard**, which walks every
+--     pane in order and will not let Q out of it;
+--   * a computer somebody has gets the **front page**, which opens by saying
+--     what is wrong and lets you jump straight at it.
+--
+-- The stamp in /aero.cfg is what tells them apart, which is why these tests
+-- write one or deliberately do not.
 do
   local mock   = require("test.mockperipheral")
   local config = require("lib.config")
+  local cfg    = require("lib.cfg")
   local realPeripheralHere = _G.peripheral
-
+  local realLabelHere = os.getComputerLabel()
 
   --- Empty the queue, so one run's leftovers are not the next one's script.
   --
-  -- configure quits on the first `q` and every case queues two, so the spare one
-  -- sat in the queue and ended the *following* run before it had processed a
-  -- single click. It ended the beacon suite's runs too, three sections later,
-  -- which is how a missing drain turns into a failure nowhere near its cause.
+  -- configure quits on the first `q` and the menu-mode cases queue two, so the
+  -- spare one sat in the queue and ended the *following* run before it had
+  -- processed a single click. It ended the beacon suite's runs too, three
+  -- sections later, which is how a missing drain turns into a failure nowhere
+  -- near its cause.
   local function drain()
     os.queueEvent("aero_drain")
     while true do
@@ -2763,28 +2989,39 @@ do
     w.modem("top")
     w.navTable("navigation_table_0")
     w.altimeter("altitude_sensor_0")
-    w.bearing("thruster_bearing_0")
-    w.bearing("thruster_bearing_1")
+    w.bearing("thruster_bearing_0", { count = 2 })
+    w.bearing("thruster_bearing_1", { count = 4 })
     if opts.eyes then
       w.optical("optical_sensor_0", { range = 128 })
       w.optical("optical_sensor_1", { range = 128 })
     end
+    if opts.orientation then w.orientation("virtual_orientation_source_0") end
     _G.peripheral = w.api
 
     fs.delete(config.craftFile)
     fs.delete("/aero.cfg")
+
+    -- The stamp, or its absence, is the whole difference between the two modes.
+    -- A test that wants the front page has to say that somebody configured this
+    -- computer once, because otherwise the program is quite right to insist on
+    -- the wizard.
+    if not opts.wizard then
+      writeFile("/aero.cfg", ('return { protocol = "aero", channel = 1618, '
+        .. 'role = %q, configured = "test" }'):format(opts.role or "pilot"))
+    elseif opts.role then
+      writeFile("/aero.cfg", ('return { role = %q }'):format(opts.role))
+    end
+
     if opts.craft then
-      local f = fs.open(config.craftFile, "w")
-      f.write("return " .. textutils.serialize(opts.craft))
-      f.close()
+      writeFile(config.craftFile, "return " .. textutils.serialize(opts.craft))
     end
 
     -- Snapshot every screen, because the pane you want is rarely the one that
     -- was up when it quit.
     local win = window.create(term.current(), 1, 1, 51, 19, true)
-    local realPull = os.pullEvent
+    local realPull = os.pullEventRaw
     local screens = {}
-    os.pullEvent = function(...)
+    os.pullEventRaw = function(...)
       local lines = {}
       for y = 1, 19 do lines[#lines + 1] = win.getLine(y) end
       screens[#screens + 1] = lines
@@ -2792,13 +3029,18 @@ do
     end
 
     for _, e in ipairs(opts.script or {}) do os.queueEvent(table.unpack(e)) end
+
+    -- Menu mode leaves on q. The wizard deliberately refuses to, so every run
+    -- ends with a terminate -- which configure takes as an event rather than an
+    -- error precisely so that it can still put the screen back.
     os.queueEvent("key", keys.q)
     os.queueEvent("key", keys.q)
+    os.queueEvent("terminate")
 
     local old = term.redirect(win)
     local ok, err = pcall(dofile, "/configure.lua")
     term.redirect(old)
-    os.pullEvent = realPull
+    os.pullEventRaw = realPull
 
     return { ok = ok, err = err, screens = screens }
   end
@@ -2812,44 +3054,11 @@ do
     return false
   end
 
-  --- Which row a piece of text landed on, in the first screen that has it.
-  --
-  -- `from` skips the opening screens, and is not optional politeness: the front
-  -- page names the roles in its warnings, so searching every screen for
-  -- "ground" finds the notice about the ground sensor rather than the row that
-  -- sets it -- and a click at that row lands on whatever the front page has
-  -- there instead. Screen 1 is always the front page.
-  local function rowOf(r, text, from)
-    for i = from or 1, #r.screens do
-      for y, line in ipairs(r.screens[i]) do
-        if tostring(line):find(text, 1, true) then return y end
-      end
-    end
-    return nil
-  end
-
-  --- Which row a piece of text is on in the *last* screen drawn.
-  --
-  -- The front page is a list of what is currently wrong, so fixing something
-  -- removes a line and every button below it moves up. A row found before the
-  -- fix is the wrong row after it -- which is a fair description of clicking on
-  -- a live screen, and fatal to a script written in advance. Reading the final
-  -- screen gives the layout as it stands when the click actually happens.
-  local function rowOfLast(r, text)
-    local screen = r.screens[#r.screens]
-    for y, line in ipairs(screen or {}) do
-      if tostring(line):find(text, 1, true) then return y end
-    end
-    return nil
-  end
-
   --- The row in the *latest* screen that shows this text at all.
   --
   -- For something reached by scrolling. The first screen showing APPLY is the
   -- one where it scrolled into view, near the bottom edge and still moving; the
-  -- last is the settled layout that a click will actually meet. And it cannot
-  -- simply read the final screen, because every run ends with `q` returning to
-  -- the front page, which does not have APPLY on it at all.
+  -- last is the settled layout a click will actually meet.
   local function rowOfLatest(r, text)
     for i = #r.screens, 1, -1 do
       for y, line in ipairs(r.screens[i]) do
@@ -2857,6 +3066,39 @@ do
       end
     end
     return nil
+  end
+
+  --- The row a piece of text is on, searching only screens that are actually
+  --- the named pane.
+  --
+  -- Every earlier way of finding a row was some version of "skip the first N
+  -- screens and hope", and both of the ways that can go wrong went wrong. The
+  -- front page carries the problem list, so it *mentions* the things the panes
+  -- are named after -- searching every screen for "ground" finds the warning
+  -- about the ground sensor rather than the row that sets it. And the number of
+  -- opening screens is not fixed, so "screen 2" was the front page again.
+  --
+  -- The title bar says which pane is up. Anchoring on it removes both.
+  local function rowOnPane(r, pane, text, last)
+    local found = nil
+    for _, screen in ipairs(r.screens) do
+      if tostring(screen[1]):find(pane, 1, true) then
+        for y = 2, #screen do
+          if tostring(screen[y]):find(text, 1, true) then
+            if not last then return y end
+            found = y
+            break
+          end
+        end
+      end
+    end
+    return found
+  end
+
+  --- A row on the front page. Called with the whole label, because a warning
+  --- about the instruments and the button that opens them both say the word.
+  local function frontRow(r, label)
+    return rowOnPane(r, "Configure", label)
   end
 
   local BROKEN = {
@@ -2869,18 +3111,33 @@ do
     mix = { { demand = "lift", control = "lift", as = "throttle" } },
   }
 
-  -- It opens by telling you what is broken. Borrowed from cc-mek-scada, and the
-  -- single most useful thing a configurator can do: the whole business of
-  -- finding out is skipped.
+  ------------------------------------------------------------------------------
+  -- The front page
+  ------------------------------------------------------------------------------
+
   local r = runConfigure{ craft = BROKEN }
   check(r.ok, "the configurator runs", r.err)
-  check(anywhere(r, "problems with this configuration"),
-        "and opens by saying there are problems")
+  check(anywhere(r, "worth knowing"),
+        "and opens by saying what is wrong with the configuration you have")
   check(anywhere(r, "switched off"),
         "naming the one that started all this -- a role set to false while the "
         .. "peripheral is attached")
 
-  -- A configuration with nothing wrong says so rather than showing an empty box.
+  -- A problem that stops the ship flying is headed differently from one that
+  -- merely wants looking at. Both are worth reading; only one is worth stopping
+  -- a boot for, and the page has to say which it is holding.
+  local grounded = runConfigure{ craft = {
+    name = "Kestrel",
+    controls = { lift = { kind = "bearing", peripheral = "thruster_bearing_0",
+                          group = "all" } },
+    instruments = { nav = "navigation_table_0", alt = "altitude_sensor_0" },
+    limits = { cruise = 10, climb = 3, descend = 2, clearance = 8 },
+    gains = { hover = 0.5 },
+    mix = {},
+  } }
+  check(anywhere(grounded, "these stop it working"),
+        "a hull whose controls are never driven is headed as a stopper")
+
   local fine = runConfigure{ craft = {
     name = "Kestrel",
     controls = { lift = { kind = "bearing", peripheral = "thruster_bearing_0",
@@ -2895,8 +3152,11 @@ do
   check(anywhere(fine, "Nothing wrong"),
         "a healthy configuration says so instead of showing a blank page")
 
-  -- The headline: both bearings offered, for the choice nothing else can make.
-  local bearingsRow = rowOf(r, "Bearings")
+  ------------------------------------------------------------------------------
+  -- The bearings, which is the decision nothing else can make
+  ------------------------------------------------------------------------------
+
+  local bearingsRow = frontRow(r, "Bearings -- which is lift")
   check(bearingsRow ~= nil, "the front page offers the bearings", bearingsRow)
 
   local picked = runConfigure{
@@ -2910,32 +3170,10 @@ do
   check(anywhere(picked, "wrong way round"),
         "and says out loud what happens if you get it backwards")
 
-  -- Applying writes a craft file that lib/hull can actually load. This is the
-  -- round trip that matters: a configurator whose output the program cannot
-  -- read would be worse than editing by hand.
-  local hull = require("lib.hull")
-  local summaryRow = rowOf(r, "Review and apply")
-
-  local applied = runConfigure{
-    craft = BROKEN,
-    script = {
-      { "mouse_click", 1, 3, summaryRow or 11 },
-      -- APPLY is the last row of the summary; found by looking rather than
-      -- counted, because the summary's length depends on the hull.
-      { "aero_find_apply" },
-    },
-  }
-  check(anywhere(applied, "about to write"),
-        "review shows what is about to be written before anything is")
-
   ------------------------------------------------------------------------------
-  -- Naming the two optical sensors, which is the whole reason the pane exists.
-  --
-  -- A hull with two of them warns until *both* roles are named, because one
-  -- named and one guessed is even odds on the terrain guard reading a hillside.
-  -- Following that instruction has to make the warning go away, and it only
-  -- does if what the pane shows survives into the file.
+  -- Naming the two optical sensors, and the round trip into a file
   ------------------------------------------------------------------------------
+
   local TWO_EYES = {
     name = "Kestrel",
     controls = { lift = { kind = "bearing", peripheral = "thruster_bearing_0",
@@ -2946,42 +3184,37 @@ do
     mix = { { demand = "lift", control = "lift", as = "throttle" } },
   }
 
-  -- First: the warning is there to begin with, or the rest proves nothing.
   local warned = runConfigure{ craft = TWO_EYES, eyes = true }
   check(anywhere(warned, "optical sensors"),
         "two sensors with neither named is called out")
 
-  local instrumentsRow = rowOf(warned, "Instruments")
+  local instrumentsRow = frontRow(warned, "Instruments -- what this hull")
   check(instrumentsRow ~= nil, "the front page offers the instruments pane")
 
   -- Where the rows land, learned by opening the panes and looking rather than
   -- counted by hand -- the list length depends on the hull, and a click at a
   -- guessed row is a test that passes by hitting something else.
-  --
-  -- Two discovery runs, because a script is queued before the run starts and so
-  -- cannot see the screen it is clicking on.
   local openInstruments = { "mouse_click", 1, 3, instrumentsRow or 8 }
 
   local instPane = runConfigure{ craft = TWO_EYES, eyes = true,
                                  script = { openInstruments } }
-  local groundY  = rowOf(instPane, "ground", 2)
-  local forwardY = rowOf(instPane, "forward", 2)
-  check(groundY and forwardY,
-        "the instruments pane offers both optical roles",
+  local groundY  = rowOnPane(instPane, "Instruments", "ground")
+  local forwardY = rowOnPane(instPane, "Instruments", "forward")
+  check(groundY and forwardY and groundY ~= forwardY,
+        "the instruments pane offers both optical roles, on rows of their own",
         tostring(groundY) .. "/" .. tostring(forwardY))
 
-  -- The naming itself, which everything after this reuses. `ground` needs one
-  -- tap to go from auto to the first sensor; `forward` needs two, because both
-  -- roles offer the same list and its first entry is the same block.
+  -- `ground` needs one tap to go from auto to the first sensor; `forward` needs
+  -- two, because both roles offer the same list and its first entry is the same
+  -- block.
   local naming = {
     openInstruments,
     { "mouse_click", 1, 3, groundY or 4 },
     { "mouse_click", 1, 3, forwardY or 5 },
     { "mouse_click", 1, 3, forwardY or 5 },
-    { "key", keys.q },                                  -- back to the front page
+    { "key", keys.q },
   }
 
-  --- The naming steps, then whatever else.
   local function after(...)
     local s = {}
     for _, e in ipairs(naming) do s[#s + 1] = e end
@@ -2989,34 +3222,31 @@ do
     return s
   end
 
-  -- Where Review sits *once the sensors are named* -- by then its own warning
-  -- has gone from the front page and taken a row with it.
-  local reviewY = rowOfLast(runConfigure{ craft = TWO_EYES, eyes = true,
-                                          script = naming }, "Review and apply")
+  -- The *last* front page, not the first. Naming the sensors removes the warning
+  -- and takes a row with it, so every button below it moves up: a row read
+  -- before the fix is the wrong row after it.
+  local reviewY = rowOnPane(runConfigure{ craft = TWO_EYES, eyes = true,
+                              script = naming },
+                            "Configure", "Review and apply", true)
   check(reviewY ~= nil, "review is still reachable after fixing the warning",
         tostring(reviewY))
 
   -- APPLY is the last row of the review pane and the pane is longer than the
-  -- screen, so it has to be scrolled to. The original version of this case
-  -- queued a made-up `aero_find_apply` event that configure.lua has never
-  -- handled -- an unknown event is simply ignored, so **APPLY was never once
-  -- clicked** and `writeCraft` went untested from the day it was written.
+  -- screen, so it has to be scrolled to.
   local openReview = { { "mouse_click", 1, 3, reviewY or 11 } }
   for _ = 1, 40 do openReview[#openReview + 1] = { "key", keys.down } end
 
   local revPane = runConfigure{ craft = TWO_EYES, eyes = true,
                                 script = after(table.unpack(openReview)) }
-  local applyY  = rowOfLatest(revPane, "APPLY")
+  local applyY  = rowOnPane(revPane, "Review", "APPLY", true)
   check(applyY ~= nil, "and the review pane offers APPLY", tostring(applyY))
 
-  -- Now do the whole thing the way a player would: name them, review, apply.
   local script = after(table.unpack(openReview))
   script[#script + 1] = { "mouse_click", 1, 3, applyY or 18 }
 
   local named = runConfigure{ craft = TWO_EYES, eyes = true, script = script }
   check(named.ok, "the configurator survives naming them", named.err)
 
-  -- The file, which is the thing actually in doubt.
   local written = fs.exists(config.craftFile) and dofile(config.craftFile) or nil
   check(type(written) == "table", "a craft file was written at all")
 
@@ -3027,12 +3257,11 @@ do
     check(inst.forward == "optical_sensor_1",
           "and so is forward -- the role that has no auto-find to fall back on",
           tostring(inst.forward))
-    check(inst.ground ~= inst.forward,
-          "and they are not the same block")
+    check(inst.ground ~= inst.forward, "and they are not the same block")
 
-    -- The round trip: load what was written and confirm the warning is gone.
     -- Following the instruction has to *work*, or the message is just noise
     -- that appears whatever you do.
+    local hull = require("lib.hull")
     hull.define(written)
     local stillWarned = false
     for _, p in ipairs(hull.problems) do
@@ -3044,8 +3273,7 @@ do
   end
 
   -- ENTER on the review pane does the same thing without scrolling, which is
-  -- the actual fix: the button was always there and always off the bottom of
-  -- the screen. Note the script -- open review, press ENTER, nothing else.
+  -- the actual fix: the button was always there and always off the bottom.
   fs.delete(config.craftFile)
   local byKey = runConfigure{
     craft = TWO_EYES, eyes = true,
@@ -3062,8 +3290,257 @@ do
         type(viaKey) == "table" and tostring((viaKey.instruments or {}).forward)
           or "no file")
 
-  _G.peripheral = realPeripheralHere
+  ------------------------------------------------------------------------------
+  -- The wizard, which is what a fresh computer gets
+  ------------------------------------------------------------------------------
+
+  local wiz = runConfigure{ wizard = true }
+  check(wiz.ok, "the wizard runs on a computer with no configuration", wiz.err)
+  check(anywhere(wiz, "has not been set up"),
+        "and opens by saying what it is")
+  check(anywhere(wiz, "(1/"), "numbering the steps, so the end is in sight")
+
+  -- Q is not a way out of it. A computer that has not been configured cannot do
+  -- its job, and letting Q past leaves somebody at a shell wondering why the
+  -- ship will not fly.
+  check(anywhere(wiz, "finish the wizard"),
+        "Q refuses to leave the wizard, and says why")
+  check(not fs.exists("/aero.cfg"),
+        "and nothing was written by a wizard that was never finished")
+
+  -- ENTER walks it. Three steps in is the hull pane for a pilot: welcome,
+  -- network, hardware, hull.
+  local walked = runConfigure{ wizard = true,
+    script = { { "key", keys.enter }, { "key", keys.enter }, { "key", keys.enter } } }
+  check(anywhere(walked, "Hardware"),
+        "ENTER advances through the panes, reaching the hardware checklist")
+  check(anywhere(walked, "the hull"), "and then the hull")
+
+  ------------------------------------------------------------------------------
+  -- Building a hull from what is bolted on. This was probe.lua, and it is the
+  -- step that saves the most time -- wiring a hull by hand is where the mistakes
+  -- come from, and every one shows up as a ship that will not fly with nothing
+  -- to say which line is wrong.
+  ------------------------------------------------------------------------------
+
+  local toHull = { { "key", keys.enter }, { "key", keys.enter }, { "key", keys.enter } }
+
+  local hullPane = runConfigure{ wizard = true, eyes = true, orientation = true,
+                                 script = toHull }
+  local buildY = rowOfLatest(hullPane, "Build a hull")
+  check(buildY ~= nil, "the hull pane offers to build one", tostring(buildY))
+
+  -- The whole wizard, the way somebody would actually walk it: three ENTERs to
+  -- the hull pane, build, then ENTER to the end and apply. Building advances by
+  -- itself, so the panes left are bearings, instruments, redstone, limits and
+  -- review.
+  local full = { table.unpack(toHull) }
+  full[#full + 1] = { "mouse_click", 1, 3, buildY or 8 }
+  for _ = 1, 4 do full[#full + 1] = { "key", keys.enter } end
+  full[#full + 1] = { "key", keys.enter }
+
+  fs.delete(config.craftFile)
+  local built = runConfigure{ wizard = true, eyes = true, orientation = true,
+                              script = full }
+  check(built.ok, "the wizard runs end to end", built.err)
+
+  local madeCfg = fs.exists("/aero.cfg") and dofile("/aero.cfg") or nil
+  check(type(madeCfg) == "table", "and writes the network file")
+  check(madeCfg and madeCfg.configured ~= nil,
+        "stamped, so startup.lua can tell it from a fresh computer")
+
+  local made = fs.exists(config.craftFile) and dofile(config.craftFile) or nil
+  check(type(made) == "table", "and a craft file built from what was attached")
+
+  if type(made) == "table" then
+    local hull = require("lib.hull")
+    local loadedOk, problems = hull.load(config.craftFile)
+    check(loadedOk, "the generated craft file loads clean", problems and problems[1])
+    check(hull.get("lift") ~= nil, "with a lift control")
+    check(hull.get("main") ~= nil, "and a main one, from the second bearing")
+    check(#hull.mix >= 3, "and a mix that drives them", #hull.mix)
+    check(hull.instruments.nav ~= nil, "with the navigation table found")
+
+    -- And the result is something that would actually be allowed to boot, which
+    -- is the only definition of "configured" that matters.
+    check(not cfg.blocking(cfg.check("pilot", {
+            configured = true, craft = made, attached = cfg.attached() })),
+          "and a ship built this way is one startup.lua will start")
+  end
+
+  ------------------------------------------------------------------------------
+  -- The hardware checklist, which was setup.lua
+  ------------------------------------------------------------------------------
+
+  -- Discovered from a run with the *same* hull, not from an earlier one with a
+  -- different problem list. A front page is a list of what is currently wrong,
+  -- so a configuration with one more warning in it puts every button one row
+  -- lower -- and a click at the row Hardware sat on for a healthy ship lands on
+  -- Network instead, which is a test that passes by hitting the wrong thing.
+  local hardwareRow = frontRow(warned, "Hardware -- what is attached")
+  check(hardwareRow ~= nil, "the front page offers the hardware pane")
+
+  local hw = runConfigure{ craft = TWO_EYES, eyes = true,
+                           script = { { "mouse_click", 1, 3, hardwareRow or 4 } } }
+  check(anywhere(hw, "Flight computer"),
+        "which names what this role is, as setup.lua used to")
+  check(anywhere(hw, "navigation table"), "and lists what it needs")
+
+  -- Everything below here is reached by scrolling: the checklist explains each
+  -- thing that is missing, so on a hull with three optional blocks absent the
+  -- tools at the bottom are a screen and a half down.
+  --
+  -- The discovery run and the run that clicks therefore scroll by exactly the
+  -- same amount. A row found on an unscrolled screen is not where it is on a
+  -- scrolled one, which is the same mistake as reading it off a page with a
+  -- different problem list -- just in the other axis. Over-scrolling is safe:
+  -- ui.draw clamps to the last full screen.
+  local function scrolled(by)
+    local s = { { "mouse_click", 1, 3, hardwareRow or 4 } }
+    for _ = 1, by do s[#s + 1] = { "key", keys.down } end
+    return s
+  end
+
+  local hwBottom = runConfigure{ craft = TWO_EYES, eyes = true,
+                                 script = scrolled(30) }
+  check(anywhere(hwBottom, "re-scans"),
+        "and says it re-scans, which is the reason it is a screen and not a "
+        .. "printout")
+  check(anywhere(hwBottom, "Watch the optical sensors"),
+        "and offers the live sensor view that `probe --eyes` used to be")
+
+  -- The survey file, which was probe.lua's other half.
+  fs.delete(config.surveyFile)
+
+  local toTools = scrolled(12)
+  local hwTools = runConfigure{ craft = TWO_EYES, eyes = true, script = toTools }
+  local surveyY = rowOnPane(hwTools, "Hardware", "Write a full survey", true)
+  check(surveyY ~= nil, "and offers the full survey", tostring(surveyY))
+
+  local surveyScript = {}
+  for _, e in ipairs(toTools) do surveyScript[#surveyScript + 1] = e end
+  surveyScript[#surveyScript + 1] = { "mouse_click", 1, 3, surveyY or 11 }
+
+  local surveyed = runConfigure{ craft = TWO_EYES, eyes = true,
+                                 script = surveyScript }
+  check(surveyed.ok, "writing a survey runs", surveyed.err)
+  check(fs.exists(config.surveyFile), "and leaves a file")
+
+  if fs.exists(config.surveyFile) then
+    local f = fs.open(config.surveyFile, "r")
+    local body = f.readAll()
+    f.close()
+    check(body:find("thruster_bearing", 1, true) ~= nil,
+          "naming what it found, for a human squinting at a hull that will "
+          .. "not fly")
+    check(body:find("setThrottle", 1, true) ~= nil,
+          "with the methods each one has, which is what the mod's own probe "
+          .. "example prints")
+  end
+
+  ------------------------------------------------------------------------------
+  -- Opening straight on a pane, so the old `setup` habit still works
+  ------------------------------------------------------------------------------
+
+  do
+    drain()
+    local w = mock.new{}
+    w.modem("top")
+    _G.peripheral = w.api
+    writeFile("/aero.cfg", 'return { role = "server", configured = "test" }')
+
+    local win = window.create(term.current(), 1, 1, 51, 19, true)
+    local screens = {}
+    local realPull = os.pullEventRaw
+    os.pullEventRaw = function(...)
+      local lines = {}
+      for y = 1, 19 do lines[#lines + 1] = win.getLine(y) end
+      screens[#screens + 1] = lines
+      return realPull(...)
+    end
+
+    os.queueEvent("key", keys.q)
+    os.queueEvent("key", keys.q)
+    os.queueEvent("terminate")
+
+    local old = term.redirect(win)
+    -- CC's `dofile` does not forward arguments to the chunk, so a flag passed
+    -- that way is silently dropped. loadfile and call the result.
+    local chunk = loadfile("/configure.lua")
+    local ok = pcall(chunk, "hardware")
+    term.redirect(old)
+    os.pullEventRaw = realPull
+
+    check(ok, "configure takes a pane name as an argument")
+
+    local onPane = false
+    for _, screen in ipairs(screens) do
+      for _, line in ipairs(screen) do
+        if tostring(line):find("Hardware", 1, true) then onPane = true end
+      end
+    end
+    check(onPane, "and opens straight onto it, the way `setup` used to")
+  end
+
+  fs.delete(config.surveyFile)
+  fs.delete(config.craftFile)
   fs.delete("/aero.cfg")
+  os.setComputerLabel(realLabelHere)
+  _G.peripheral = realPeripheralHere
+end
+
+--------------------------------------------------------------------------------
+section("startup -- the gate")
+--------------------------------------------------------------------------------
+
+-- startup.lua refuses to launch a program this computer is not configured to
+-- run. What is worth checking is the decision, not the launching: running
+-- pilot.lua for real from inside a test suite would fly a ship.
+do
+  local cfg = require("lib.cfg")
+  local config = require("lib.config")
+  local mock = require("test.mockperipheral")
+  local realPeripheralHere = _G.peripheral
+
+  local w = mock.new{}
+  w.modem("top")
+  _G.peripheral = w.api
+
+  fs.delete("/aero.cfg")
+  fs.delete(config.craftFile)
+
+  -- A fresh computer is stopped, whatever else is true of it.
+  check(cfg.blocking(cfg.checkHere()),
+        "a computer with no /aero.cfg is stopped before anything starts")
+  check(cfg.configured() == nil, "and knows it has never been configured")
+
+  -- Configured as a tower, it goes.
+  writeFile("/aero.cfg", 'return { role = "server", configured = "test" }')
+  check(cfg.configured() == "test", "the stamp is what says otherwise")
+  check(cfg.roleHere() == "server", "and the role is read back")
+  check(not cfg.blocking(cfg.checkHere()), "a configured tower starts")
+
+  -- Configured as a pilot with no hull, it does not.
+  writeFile("/aero.cfg", 'return { role = "pilot", configured = "test" }')
+  check(cfg.blocking(cfg.checkHere()),
+        "a pilot with no craft file is stopped, because it cannot fly")
+
+  -- ...and with one, it does, even though nothing is attached.
+  writeFile(config.craftFile, "return " .. textutils.serialize({
+    name = "Kestrel",
+    controls = { lift = { kind = "bearing", peripheral = "thruster_bearing_0" } },
+    instruments = {},
+    limits = { cruise = 10, climb = 3, descend = 2, clearance = 8 },
+    gains = { hover = 0.5 },
+    mix = { { demand = "lift", control = "lift", as = "throttle" } },
+  }))
+  check(not cfg.blocking(cfg.checkHere()),
+        "and one with a hull starts even with the contraption unassembled -- "
+        .. "which is the state every ship is in until somebody assembles it")
+
+  fs.delete("/aero.cfg")
+  fs.delete(config.craftFile)
+  _G.peripheral = realPeripheralHere
 end
 
 --------------------------------------------------------------------------------
@@ -3321,72 +3798,6 @@ do
   os.setComputerLabel(realLabel)
   _G.peripheral = realPeripheral
   fs.delete(config.beaconFile)
-end
-
---------------------------------------------------------------------------------
-section("probe")
---------------------------------------------------------------------------------
-
--- probe.lua writes the file every ship depends on, and it is the first thing
--- anyone runs. The check that matters is the round trip: whatever it generates
--- has to be a file lib/hull can actually load, because the alternative is a
--- syntax error discovered on an assembled contraption with no working copy of
--- anything to fall back on.
-do
-  local mock = require("test.mockperipheral")
-  local hull = require("lib.hull")
-  local config = require("lib.config")
-
-  local w = mock.new{}
-  w.bearing("thruster_bearing_0", { count = 2 })
-  w.bearing("thruster_bearing_1", { count = 4 })
-  w.navTable("navigation_table_0")
-  w.altimeter("altitude_sensor_0")
-  w.optical("optical_sensor_0")
-  w.orientation("virtual_orientation_source_0")
-  _G.peripheral = w.api
-
-  fs.delete(config.craftFile)
-  fs.delete(config.craftFile .. ".new")
-  fs.delete(config.surveyFile)
-
-  local ok = pcall(dofile, "/probe.lua")
-  check(ok, "probe runs")
-  check(fs.exists(config.surveyFile), "and writes a survey")
-  check(fs.exists(config.craftFile), "and a craft file")
-
-  local body = (function()
-    local f = fs.open(config.surveyFile, "r") local b = f.readAll() f.close() return b
-  end)()
-  check(body:find("thruster_bearing", 1, true) ~= nil,
-        "naming what it found, for a human squinting at a hull that will not fly")
-
-  -- The round trip.
-  local loadedOk, problems = hull.load(config.craftFile)
-  check(loadedOk, "the generated craft file loads clean",
-        problems and problems[1])
-  check(hull.get("lift") ~= nil, "with a lift control")
-  check(hull.get("main") ~= nil, "and a main one, from the second bearing")
-  check(#hull.mix >= 3, "and a mix that drives them", #hull.mix)
-  check(hull.instruments.nav ~= nil, "with the navigation table found")
-
-  -- Never overwritten. A generated file replacing a hull somebody tuned over an
-  -- evening would be the most annoying thing this program could do.
-  local kept = "-- mine\nreturn { controls = {}, mix = {} }\n"
-  writeFile(config.craftFile, kept)
-  pcall(dofile, "/probe.lua")
-
-  local after = (function()
-    local f = fs.open(config.craftFile, "r") local b = f.readAll() f.close() return b
-  end)()
-  check(after == kept, "a second run does not overwrite an existing craft file")
-  check(fs.exists(config.craftFile .. ".new"),
-        "and leaves its suggestion beside it instead")
-
-  fs.delete(config.craftFile)
-  fs.delete(config.craftFile .. ".new")
-  fs.delete(config.surveyFile)
-  _G.peripheral = realPeripheral
 end
 
 --------------------------------------------------------------------------------

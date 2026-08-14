@@ -11,11 +11,16 @@
 # test/spec.lua checks this list against what is actually in the repo, in both
 # directions, so adding a file and forgetting this line is a test failure rather
 # than an installer that silently ships an incomplete tree.
+#
+# The version below is what `install check` compares against what is already on
+# a computer. It rides in a comment so this file stays exactly the plain list of
+# paths the test checks -- everything from a # to the end of the line is skipped
+# by both readers.
+#
+# version 1.1
 
 startup.lua
 update.lua
-probe.lua
-setup.lua
 configure.lua
 beacon.lua
 guide.lua
@@ -24,6 +29,7 @@ server.lua
 remote.lua
 
 lib/config.lua
+lib/cfg.lua
 lib/net.lua
 lib/state.lua
 lib/log.lua

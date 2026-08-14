@@ -13,9 +13,9 @@ contraptions:
 - `remote.lua` — runs on an **advanced pocket computer**. Four screens: fleet,
   fly, nav, log.
 
-Plus `probe.lua`, a hardware survey that writes a starter `/craft.cfg` from what
-is actually attached to the hull, and `beacon.lua` -- a computer placed in the
-world, given a name and coordinates, that then announces itself as a waypoint.
+Plus `configure.lua`, which is the whole of setup and the only thing that writes
+a configuration file, and `beacon.lua` -- a computer placed in the world, given a
+name and coordinates, that then announces itself as a waypoint.
 
 All communicate over a raw modem channel via `lib/net.lua` — not rednet. The
 channel is configurable per network, which is what lets several independent
@@ -182,9 +182,9 @@ through it, all the same rule:
   the resolve on the attach event. Resolving once at boot meant a pilot started
   before the ship was assembled — the ordinary order of operations — reported
   that it could not find the navigation table and went on saying so after the
-  table was plainly there. `setup` and `configure` had rescanned on attach from
-  the beginning, which is exactly why they could see hardware the flying program
-  never had. cc-mek-scada's `ppm.remount` is the same idea, for the same reason:
+  table was plainly there. `configure` had rescanned on attach from the
+  beginning, which is exactly why it could see hardware the flying program never
+  had. cc-mek-scada's `ppm.remount` is the same idea, for the same reason:
   a peripheral going away is a normal event, not an error to record once and
   carry to the ground.
 
@@ -582,6 +582,53 @@ Replacing `lib/hull.lua` underneath a live control loop and then rebooting means
 several seconds during which nothing is holding the ship up. The updater runs
 *after* `parallel.waitForAny` returns, never from inside the listener.
 
+### Setup, and the one place it lives
+
+`lib/cfg.lua` loads, validates and writes all three configuration files, and is
+the only module that does. Before it there were four writers and four opinions
+about what counted as broken: `install.lua` wrote `/aero.cfg` one way,
+`configure.lua` wrote it another, `probe.lua` wrote `/craft.cfg` in a third
+style, and `beacon.lua` owned `/beacon.cfg`. A ship could pass `setup` and fail
+to fly, and the configurator's front page could report a clean configuration that
+`lib/hull.lua` refused.
+
+`probe.lua` and `setup.lua` are gone, absorbed into `configure.lua` — the hull
+survey and generator, the full peripheral dump, the live optical sensor watch,
+and the re-scanning hardware checklist are all panes now. The installer asks
+nothing at all and hands over to `configure` at the end of a fresh install;
+`startup.lua` does the same when it finds a computer nobody has set up. There is
+one way to answer those questions and one file each answer lands in.
+
+**What gates a boot, and what only gets reported.** This is the distinction
+`lib/cfg.lua` exists to make, and the one that would be catastrophic backwards:
+
+- **Configuration gates.** No `/craft.cfg`, no controls, no mix, or nothing in
+  the mix driving lift -- none of that can fly, so `startup.lua` sends it to the
+  configurator instead of starting a control loop over it.
+- **Hardware never gates.** Assembling a contraption is what attaches its
+  peripherals, so *every* ship is missing its navigation table right up until the
+  moment it is assembled, and `hull.remount` exists to pick them up when they
+  appear. A gate on attached hardware would trap every ship in the world at a
+  screen it has no way to satisfy, and would strand a ship that was flying a
+  minute ago and came back from a chunk unload. Missing hardware is a `warn`
+  however required it is.
+
+`/aero.cfg` now always carries a `configured` stamp, and its **presence** is what
+distinguishes a computer somebody set up from a fresh one that happens to want
+the ordinary settings. Both older installers deleted the file when nothing
+differed from the defaults, on the reasonable-sounding grounds that a plain setup
+should leave nothing extra to explain -- the cost was that the two cases were
+indistinguishable, so nothing could decide whether to run the wizard. The stamp
+is deliberately **not** compared against the current version: cc-mek-scada
+re-asks when its config version moves, which is right for a reactor that is not
+going anywhere, and here would drop every ship in the fleet into a configuration
+screen on the next `update`.
+
+The wizard disables its own exit, as cc-mek-scada's does. Ctrl-T still works --
+it arrives as an event, because `configure` pulls raw, so the epilogue still puts
+the screen back -- so a person at the keyboard is never trapped and an unattended
+computer cannot fall out of setup by accident.
+
 ### Configuration
 
 `lib/config.lua` holds the defaults. `/aero.cfg` is a Lua file returning a table
@@ -599,8 +646,8 @@ it is deliberately **not** in `manifest.txt`. It also carries `role`
    time goes: a PID that does not settle is not visible from reading it
 5. `lib/flight.lua` and its guards
 6. `pilot.lua` under `parallel`, with the release epilogue
-7. `probe.lua`, then `server.lua`, then `remote.lua` last — it only renders what
-   the protocol already provides
+7. `lib/cfg.lua` and `configure.lua`, then `server.lua`, then `remote.lua` last
+   — it only renders what the protocol already provides
 
 ## Testing
 
@@ -611,7 +658,11 @@ see the Tests section of `README.md` for both commands. CCEmuX has no `--script`
 flag — it boots a directory's `startup.lua`, and this tree's real one flies a
 ship — so `test/ccemux.lua` is the shim that goes in as `startup.lua` instead,
 and it calls `os.shutdown()` because without that a finished suite and a hung one
-look identical. Six suites, run in that order by `test/run.lua`:
+look identical. That shuts down the emulated *computer* and not the launcher: the
+JVM lingers afterwards, so under CCEmuX a clean pass still blocks the caller.
+Read `/test-summary.txt` rather than waiting for the process, and time the run
+out — the summary is written before the shutdown, so its presence means the suite
+finished. Six suites, run in that order by `test/run.lua`:
 
 | Suite | What it covers |
 | --- | --- |
@@ -620,7 +671,7 @@ look identical. Six suites, run in that order by `test/run.lua`:
 | `pilot_spec.lua` | pilot.lua's two loops: orders, updates, the release epilogue |
 | `server_spec.lua` | server.lua's loop: roster, waypoints, log, relaying |
 | `remote_spec.lua` | remote.lua's loop: both link modes, every screen |
-| `install_spec.lua` | install.lua: fetching, the prompts, the files it leaves |
+| `install_spec.lua` | install.lua: the four modes, versions, orphans, the hand-off |
 
 `lib/nav`, `lib/instruments`, `lib/autopilot` and `lib/flight` need no mock at
 all — they touch no APIs, which is most of the reason they are shaped that way.

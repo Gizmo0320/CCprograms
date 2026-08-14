@@ -714,7 +714,7 @@ function hull.define(craft, path)
     else
       hull.problems[#hull.problems + 1] =
         "no navigation_table found: is the contraption assembled, and is the "
-        .. "table part of it? Run `setup` to check the hardware"
+        .. "table part of it? Run `configure` to check the hardware"
     end
   end
 
@@ -754,7 +754,7 @@ function hull.load(path)
 
   if not fs or not fs.exists(path) then
     hull.reset()
-    hull.problems = { "no " .. path .. " -- run probe.lua to make one" }
+    hull.problems = { "no " .. path .. " -- run `configure` to make one" }
     return false, hull.problems
   end
 

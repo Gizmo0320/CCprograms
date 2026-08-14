@@ -1,15 +1,16 @@
 --- What each kind of computer needs bolted to it.
 --
 -- Pure: a table of requirements and a function that checks a list of attached
--- peripheral types against it. `setup.lua` draws the result and `install.lua`
--- prints a short version of it, so both say exactly the same thing.
+-- peripheral types against it. `configure` draws the result on its Hardware
+-- pane, and `lib/cfg.lua` folds it into the check that decides whether a
+-- computer may start -- so both say exactly the same thing.
 --
 -- ## Why this exists as data
 --
 -- "It cannot find the navigation table" is the commonest way for this program to
 -- fail, and it has at least four causes: the block is not on the contraption,
 -- the contraption is not assembled, the craft file switched the role off, or
--- nothing has run `probe` yet. None of those is visible from a flight computer
+-- nothing has been configured yet. None of that is visible from a flight computer
 -- printing one line of warning.
 --
 -- So the requirements are written down, per role, with what each thing is *for*
@@ -177,7 +178,7 @@ function needs.verdict(summary, role)
     return "ready, with things it could do better", "warn"
   end
   if role == "pilot" then
-    return "everything attached -- run `probe` next", "ok"
+    return "everything attached -- build the hull next", "ok"
   end
   return "everything attached", "ok"
 end

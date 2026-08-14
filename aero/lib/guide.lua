@@ -70,32 +70,39 @@ Type: guide first
   on it.
 
 2 On that computer run:
-    probe
-  It writes /craft.cfg
-  from what it can see,
-  and /aero.survey.txt
-  listing every
-  peripheral it found.
+    configure
+  It walks the whole
+  setup and builds
+  /craft.cfg from what
+  it can see.
+
+  On a fresh computer it
+  starts by itself the
+  first time you turn it
+  on, and nothing else
+  will start until it is
+  done. There is nothing
+  to remember.
 
   ASSEMBLED matters for
   this step and only
   this one. Unassembled,
   the ship's blocks are
   not peripherals yet,
-  and probe would write
-  a hull file saying
-  there are none.
+  and there is nothing
+  for it to find.
 
   The pilot does not
   care -- it re-resolves
   when peripherals
-  attach -- but probe
-  writes a file, and the
+  attach -- but the hull
+  is a file, and the
   file sticks.
 
-3 Open /craft.cfg. Check
-  the one thing probe
-  had to guess: which
+3 It stops on BEARINGS
+  and asks the one thing
+  nothing can work out
+  by looking: which
   bearing is lift and
   which is main. The
   wrong way round is a
@@ -169,7 +176,7 @@ BEARINGS is the one that
 matters. Nothing can work
 out which bearing holds
 the ship up by looking --
-probe guesses -- and
+the scan guesses -- and
 getting it backwards is a
 ship that flies into the
 ground. Here you see
@@ -191,7 +198,7 @@ APPLY.
 If a computer will not do
 what you expect, run:
 
-  setup
+  configure hardware
 
 It lists everything this
 role needs, marks what is
@@ -200,28 +207,25 @@ says what each thing is
 for and what you lose
 without it.
 
-It re-checks every
-second, so you can leave
-it on screen, go and
-place the missing block,
-and watch the line turn
-green.
+It re-scans every second,
+so you can leave it on
+screen, go and place the
+missing block, and watch
+the line turn green.
 
-  setup pilot
+The front page above it
+opens with everything
+wrong with this
+computer's configuration,
+so you rarely have to go
+looking. Anything that
+would stop the program
+running is listed first
+and in red.
 
-shows another role's list,
-for planning a build
-before you have made it.
-
-On a flight computer it
-also reads /craft.cfg and
-reports anything that
-disagrees with the
-hardware -- which is
-where the confusing
-failures live. "It cannot
-find the navigation
-table" has four causes:
+"It cannot find the
+navigation table" has
+four causes:
 
  the block is not on the
  contraption
@@ -229,10 +233,12 @@ table" has four causes:
  assembled
  /craft.cfg switched the
  role off
- nothing has run probe
+ nothing has been
+ configured yet
 
-setup tells the four
-apart. Nothing else can.
+The front page tells the
+four apart. Nothing else
+can.
 
 The second one used to
 be permanent. Assembling
@@ -256,8 +262,10 @@ matters.
 For the optical sensors
 specifically:
 
-  probe --eyes
+  configure hardware
 
+and pick Watch the
+optical sensors. It
 shows what each one
 actually reports -- its
 range, whether it sees
@@ -396,11 +404,12 @@ forward
   The two optical roles
   are the same block, so
   only you know which
-  way each points. probe
-  assumes the first is
-  down and the second is
-  forward. Check it in
-  configure.
+  way each points. The
+  scan assumes the first
+  is down and the second
+  is forward. Check it
+  on the Instruments
+  pane.
 
   Naming one sensor as
   both is refused: they
@@ -409,11 +418,12 @@ forward
   read a number that
   means something else.
 
-  Run  probe --eyes  to
-  watch what the sensors
-  actually report, live,
-  and which role each
-  one has.
+  Watch the optical
+  sensors, on the
+  Hardware pane, shows
+  what they actually
+  report, live, and
+  which role each has.
 
   Range is set on the
   SENSOR BLOCK. The ship
@@ -950,16 +960,17 @@ HANDS BACK AT ONCE
  named in /craft.cfg.
 
 CANNOT NAVIGATE
- Run `setup`. It tells
- apart: no block, an
+ Run `configure`. Its
+ front page tells apart:
+ no block, an
  unassembled
  contraption, a
  /craft.cfg that
  switched nav off, and
- never having run probe.
+ nothing configured yet.
 
  If the block IS there
- and setup can see it,
+ and configure sees it,
  you are on an old
  version. The pilot now
  re-resolves whenever a
@@ -976,8 +987,10 @@ NO CLEARANCE SHOWN
  set on the BLOCK; the
  ship asks and takes
  what it is given.
- Run  probe --eyes  to
- see the real numbers.
+ Watch the optical
+ sensors, on configure's
+ Hardware pane, for the
+ real numbers.
 
  Same cause if nothing
  is ever surveyed: the
@@ -1018,7 +1031,7 @@ these, so yours survive:
    the tower's waypoints
    and its log
  /aero.survey.txt
-   what probe last saw
+   the last full survey
  /beacon.cfg
    a beacon's name, kind
    and position
@@ -1029,11 +1042,14 @@ Programs:
  server  the tower
  remote  the pocket
  beacon  be a waypoint
- setup   what this
-         computer needs
- config- set it up without
- ure     editing Lua
- probe   survey the hull
+ config- set this
+ ure     computer up:
+         hardware, hull,
+         network. Runs by
+         itself the first
+         time. Add a pane
+         name to open on
+         it
  guide   this
  update  fetch the
          latest. Add

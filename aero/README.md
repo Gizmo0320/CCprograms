@@ -14,20 +14,27 @@ its role says:
 | `server.lua` | an advanced computer at base | Fleet roster, waypoints, the log, a monitor dashboard and a map |
 | `remote.lua` | an advanced pocket computer | Fleet, fly, nav, log |
 | `beacon.lua` | a computer standing where you want a waypoint | Announces itself as one. No sensors needed |
-| `setup.lua` | any of them | What this computer needs, what it has, and what is wrong |
-| `configure.lua` | any of them | Set it up in panes, with a review, without editing Lua |
+| `configure.lua` | any of them | Sets it up. The only way in, and it runs by itself on a fresh computer |
 
-Plus `probe.lua`, which looks at what is bolted to the hull and writes a
-`/craft.cfg` to start from — and, with `--eyes`, shows live what the optical
-sensors actually report; `beacon.lua`, a computer you place in the world and
-give coordinates to, so that it *is* a waypoint; and `setup.lua`, which tells you
-what any computer is missing.
+**`configure` is the whole of setup.** It asks what this computer is, surveys the
+hull and writes a `/craft.cfg` from what is actually bolted on, shows a live
+checklist of what is attached, and will not let you leave a required question
+unanswered. `startup.lua` runs it before it will start anything else, so a
+computer that is not configured says so once, clearly, instead of starting a
+program that cannot work.
 
 ```
-probe            survey the hull, and write /craft.cfg if there is not one
-probe --force    survey, and write /craft.cfg.new even if there is
-probe --eyes     watch every optical sensor live: range, hit, distance, block
+configure            the front page, or the wizard on a fresh computer
+configure --wizard   the wizard, whatever state the computer is in
+configure hardware   open straight on a pane, by name
 ```
+
+It replaced three things that used to overlap: the installer's four questions,
+`probe` (which surveyed the hull) and `setup` (which listed the hardware). Each
+had its own idea of what a broken configuration looked like, and the order to run
+them in was written in this README and nowhere the program could enforce it — so
+the ordinary failure was a computer that had been through all three and still
+would not fly, with every one of them reporting that its own part was fine.
 
 **Every ship is autonomous.** The tower and the pocket set goals; they never fly
 anything. Switch the tower off, break it, let its chunk unload — the ships carry
@@ -65,20 +72,32 @@ On every computer — pilot, tower and pocket alike:
 wget run https://raw.githubusercontent.com/Gizmo0320/CCprograms/main/aero/install.lua
 ```
 
-It asks four things: the network name, the modem channel, whether this is a
-**pilot**, the **tower** or a **beacon**, and a name for this computer. A pocket
-computer is always the remote and is not asked.
-
-Unattended:
+It downloads the tree and hands over to `configure`, which asks everything there
+is to ask. The installer itself asks nothing about the network, the role or the
+name. It used to, and so did `configure`, and the two wrote the file in different
+shapes — so whichever you had run last decided what your computer thought it was.
 
 ```
-install --net=north --channel=4300 --role=pilot  --name=Kestrel
-install --net=north --channel=4300 --role=server --name=Tower
-install --net=north --channel=4300 --role=beacon --name=quarry-pad
+install                 install, or update if it is already here
+install check           what is here and what is on the branch; writes nothing
+install update          fetch the current version, keeping every config file
+install uninstall       remove the program, and ask about your own files
+install --yes           answer every prompt yes, for an unattended run
+install <mode> <branch> <owner/repo>
 ```
 
-To update later, on any computer: `update`, or `update --check` to see what
-would change without changing it. A ship in the air **refuses** an update.
+`check` compares the version on this computer against the branch, and lists any
+file that has gone missing — which is invisible from a version number, and is
+exactly the state that makes a program fail in a way nothing explains.
+
+An update keeps `/aero.cfg`, `/craft.cfg` and `/beacon.cfg`, none of which are in
+`manifest.txt` for precisely that reason. It also offers to delete any file that
+used to be part of the program and is not any more: an orphaned `lib/` module
+still sitting there is one `require` away from being loaded in preference to
+nothing at all.
+
+To update later, on any computer: `update`, or `update --check` to see what would
+change without changing it. A ship in the air **refuses** an update.
 
 ### The manual is in the game
 
@@ -104,37 +123,40 @@ wireless modem on that computer, a navigation table and an altitude sensor on
 the hull, and an optical sensor pointing down.
 
 **2. Install** on the ship's computer, on an advanced computer at base, and on
-an advanced pocket computer — the same one-liner on all three. It asks four
-things; the defaults are fine for a first ship.
+an advanced pocket computer — the same one-liner on all three.
 
-**3. Check the hardware.** On the ship's computer, `setup`. Everything marked
-`NO` in red has to be dealt with before the rest of this works. Leave it running
-while you fix them; it re-checks itself.
+**3. Answer the wizard.** It starts by itself when the install finishes, and
+again on the first boot of any computer that has not been set up. There is
+nothing to remember and no order to get wrong. On a ship it walks:
 
-**4. Survey the hull, with the contraption assembled.** On the ship's computer:
+| Step | |
+| --- | --- |
+| **Welcome** | what this computer is: pilot, tower or beacon |
+| **Network** | name, channel |
+| **Hardware** | the live checklist. Anything red has to be dealt with — it re-scans while you watch, so you can walk over, place the block, and see the line turn green |
+| **The hull** | *Build a hull from what is attached*: the survey, and a `/craft.cfg` filled in from it |
+| **Bearings** | the one guess nothing can make for you |
+| **Instruments** | including which optical sensor points down |
+| **Redstone** | burners and vents, for a balloon |
+| **Limits** | cruise, climb, descend, clearance, hover |
+| **Review** | everything about to be written. **ENTER** applies |
 
-```
-probe
-```
+Assembled matters at the hull step and only there. An unassembled contraption's
+blocks are not peripherals yet, so there would be nothing to find. The *pilot*
+does not care — it re-resolves whenever a peripheral attaches — but the hull is a
+file, and a file written from an empty survey says the ship has no instruments.
 
-It writes `/craft.cfg` from what it can see, and `/aero.survey.txt` listing
-every peripheral it found.
+**4. Check the one guess.** The wizard stops on **Bearings** and asks which
+bearing lifts and which pushes. The scan assumes the first lifts and the second
+pushes; that is the commonest arrangement and still a guess, and getting it
+backwards is a ship that accelerates into the ground. The pane shows every
+bearing attached — point at the right one. (Or edit `/craft.cfg` afterwards; it
+is only Lua.)
 
-Assembled matters here and only here. An unassembled contraption's blocks are
-not peripherals yet, so `probe` would survey a hull with nothing on it. The
-*pilot* no longer cares — it re-resolves whenever a peripheral attaches, so you
-can start it before assembling — but `probe` writes a file, and a file written
-from an empty survey is a hull definition that says the ship has no instruments.
-
-If two optical sensors came back, run `probe --eyes` and check which is which:
-they are the same block, so `probe` guesses the first points down and the second
-forward.
-
-**5. Check the one guess.** Run `configure` and open **Bearings**. `probe`
-assumes the first bearing lifts and the second pushes; that is the commonest
-arrangement and still a guess, and getting it backwards is a ship that
-accelerates into the ground. The pane shows every bearing attached — point at the
-right one. (Or edit `/craft.cfg` by hand; it is only Lua.)
+If two optical sensors came back, the **Instruments** pane names both roles, and
+*Watch the optical sensors* on the **Hardware** pane shows live what each one
+really reports — which is the only way to tell a broken sensor from one pointed
+at a long drop.
 
 **6. Tethered test — do not skip this.** Run `pilot` with no flight plan. Check
 the pocket computer sees the ship. Then press **Ctrl-T**. Every thruster must go
@@ -158,9 +180,9 @@ guards are all the ship has until something has measured the ground. Fly it once
 and the tower remembers; the next plan over the same ground will tell you what it
 needs before you take off.
 
-**10. Optional, later.** Put a computer at the far pad, install it with
-`--role=beacon`, and run `beacon` to give it a name and its coordinates. It is
-then a waypoint that is always there, with nobody standing next to it.
+**10. Optional, later.** Put a computer at the far pad and install it. Choose
+**beacon** in the wizard and give it a name and its coordinates. It is then a
+waypoint that is always there, with nobody standing next to it.
 
 ## Configuring
 
@@ -170,61 +192,105 @@ configure
 
 Panes, a review, and nothing written until you say so — the shape
 [cc-mek-scada](https://github.com/MikaylaFischler/cc-mek-scada) uses, which gets
-three things right this project did not: setup is its own program, the front page
-**tells you what is wrong with the configuration you already have**, and you see
-everything you are about to write before it is written.
+three things right this project did not: configuration is its own program, the
+front page **tells you what is wrong with the configuration you already have**,
+and you see everything you are about to write before it is written.
+
+Two modes, and the difference between them is the point.
+
+**The wizard** is what a computer nobody has configured gets. It walks every pane
+in order, numbers the steps so the end is in sight, and **`q` will not leave it**
+— a computer that has not been configured cannot do its job, and letting `q` past
+leaves somebody at a shell wondering why the ship will not fly. (Ctrl-T still
+works, so a person at the keyboard is never trapped; the case this protects is an
+unattended computer rebooting into it.)
+
+**The front page** is what everything after that gets. It opens with a list of
+everything wrong with this computer, worst first, and each line takes you to the
+pane that fixes it.
 
 | Pane | |
 | --- | --- |
 | **Network** | name, channel, role |
+| **Hardware** | the live checklist, the full survey, and the optical sensor watch |
+| **The hull** | build a `/craft.cfg` from what is bolted on |
 | **Bearings** | which bearing is lift and which is main |
 | **Instruments** | what this hull can read, including switching one off deliberately |
+| **Redstone** | burners, vents and wires — what a balloon flies on |
 | **Limits** | cruise, climb, descend, clearance, hover |
 
 **Bearings is the one that matters.** Nothing can work out which bearing holds
-the ship up by looking — `probe` guesses — and getting it backwards is a ship
+the ship up by looking — the scan guesses — and getting it backwards is a ship
 that accelerates into the ground. Here you are shown every bearing that is
 actually attached and you point at the right one; swapping them is two taps
 rather than an edit to a file you have to find first.
 
-It writes ordinary Lua to `/aero.cfg` and `/craft.cfg`, both still outside
-`manifest.txt` and still yours to edit by hand. This is a nicer way in, not a
-replacement.
+It writes ordinary Lua to `/aero.cfg`, `/craft.cfg` and `/beacon.cfg`, all
+outside `manifest.txt` and all still yours to edit by hand. This is a nicer way
+in, not a replacement for the files.
+
+### What stops a boot, and what does not
+
+`startup.lua` asks `lib/cfg.lua` whether this computer may run, and the
+distinction it makes is worth stating because getting it backwards would ground
+the entire fleet.
+
+**Configuration stops a boot. Hardware never does.** A pilot with no
+`/craft.cfg`, no controls, or nothing in the mix that drives lift is sent to the
+configurator — none of those can fly. A pilot whose `/craft.cfg` is perfect but
+whose navigation table is missing **starts anyway**, because assembling a
+contraption is what attaches its peripherals, so every ship in the world is in
+that state right up until the moment it is assembled. A gate on attached hardware
+would trap every ship at a screen it has no way to satisfy, and would strand a
+ship that was flying a minute ago and came back from a chunk unload.
+
+So missing hardware is always a warning, however required it is, and only the
+files can stop a program starting.
 
 ## Checking the hardware
 
 ```
-setup
+configure hardware
 ```
 
 Lists everything this computer's role needs, marks what is attached **right
-now**, and says what each thing is for and what you lose without it. It
-re-checks every second, so you can leave it on screen, walk over, place the
-missing block, and watch the line turn green.
+now**, and says what each thing is for and what you lose without it. It re-scans
+every second, so you can leave it on screen, walk over, place the missing block,
+and watch the line turn green. That is the whole reason it is a screen rather
+than a printout.
 
-`setup pilot` shows another role's list, for planning a build before you have
-made it.
+The same pane carries the two tools that used to be `probe`:
 
-On a flight computer it also reads `/craft.cfg` and reports anything that
-disagrees with the hardware — and that half is the important one, because
-**"it cannot find the navigation table" has four separate causes**:
+- **Write a full survey to a file** — every attached peripheral and every method
+  it has, into `/aero.survey.txt`. Longer than any screen, so it goes somewhere
+  you can read it while editing something else.
+- **Watch the optical sensors** — what each one actually reports, live: its
+  range, whether it sees anything, how far, and which calls fail, next to the
+  role `/craft.cfg` gives it. A sensor that is not working looks, from every
+  other screen in this program, exactly like one pointed at a long drop.
+
+The front page above it opens with everything wrong with the configuration, which
+is the important half — because **"it cannot find the navigation table" has four
+separate causes**:
 
 - the block is not on the contraption
 - the contraption is not assembled, so its blocks are not peripherals yet
 - `/craft.cfg` has the role switched off
-- nothing has run `probe` yet, so there is no `/craft.cfg` at all
+- nothing has been configured yet, so there is no `/craft.cfg` at all
 
-A flight computer printing one line of warning cannot tell those apart. `setup`
-can, and puts the answer on the second line of the screen with the header in red.
+A flight computer printing one line of warning cannot tell those apart. The front
+page can, and puts the answer at the top of the screen with the header in red.
 
 > **If you have a ship that will not navigate, this is the first thing to run.**
-> Earlier versions of `probe` wrote `nav = false` into `/craft.cfg` for anything
-> that was not attached at the moment it ran — which is the normal state of a
+> Earlier versions wrote `nav = false` into `/craft.cfg` for anything that was
+> not attached at the moment the survey ran — which is the normal state of a
 > contraption that has not been assembled — and `false` means *this hull
 > deliberately has none, stop looking*. Plugging the table in afterwards did not
-> help, because the file was now insisting the ship had none. `probe` no longer
-> does that, and `setup` reports the mistake in existing files. Re-run `probe` on
-> an assembled ship, or delete the `nav = false` line by hand.
+> help, because the file was now insisting the ship had none. The survey no
+> longer does that: a role with nothing attached is left out of the file
+> entirely, so it is found automatically the moment its block appears. Existing
+> files are reported on the front page — `nav is switched off, but a
+> navigation_table is attached`.
 
 ### Assembling the ship after starting the pilot
 
@@ -239,8 +305,8 @@ operations, left it reporting that it could not find the navigation table while
 the table sat plainly on the hull. Rebooting fixed it, which made it look like an
 intermittent fault rather than a rule.
 
-The tell was that `setup` and `configure` could see hardware the pilot could not:
-both have always rescanned on attach and detach. The pilot now does the same, and
+The tell was that `configure` could see hardware the pilot could not: it has
+always rescanned on attach and detach. The pilot now does the same, and
 logs a `hardware` event when the set of instruments actually changes. Assembly
 order no longer matters, and neither does taking a ship apart and putting it back
 together with the computer left running.
@@ -251,15 +317,10 @@ The installer deliberately does not write one. Which bearing holds the ship up
 is the one thing it cannot possibly know, and a wrong guess is a ship that
 accelerates into the ground.
 
-Assemble the contraption, then on the ship's computer:
-
-```
-probe
-```
-
-It writes `/aero.survey.txt` — every attached peripheral and its methods — and a
-`/craft.cfg` filled in from what it found. Then read it and fix the one thing it
-had to guess:
+Assemble the contraption, then on the ship's computer run `configure` and take
+**The hull → Build a hull from what is attached**. It fills in the controls, the
+instruments and a standard mix from what it can see, and then walks you straight
+onto the pane that asks the one thing it had to guess:
 
 ```lua
 return {
@@ -290,7 +351,7 @@ return {
 }
 ```
 
-**`lift` and `main` are the thing to check.** `probe` assumes the first bearing
+**`lift` and `main` are the thing to check.** The scan assumes the first bearing
 lifts and the second pushes, which is the commonest arrangement and still a
 guess.
 
@@ -442,8 +503,8 @@ to say "this hull has none, stop looking and stop warning".
 | `forward` | `optical_sensor` | what is ahead. No sensor means no obstacle guard |
 
 **The two optical sensors are the same block**, so only you know which way each
-one points. `probe` assumes the first points down and the second forward — the
-commonest arrangement, and still a guess. Check it, in `configure` →
+one points. The hull scan assumes the first points down and the second forward —
+the commonest arrangement, and still a guess. Check it, in `configure` →
 **Instruments** or in the file.
 
 Three rules keep them apart. A sensor named for one role is never auto-found for
@@ -467,11 +528,8 @@ range is not a fault — the sensor works, it has a limit — but a `ground` sen
 that ends up under 32 blocks is called out on the ship panel, because a blank
 clearance reads exactly like flat ground a long way down.
 
-To see what a sensor actually reports, including which calls fail:
-
-```
-probe --eyes
-```
+To see what a sensor actually reports, including which calls fail: `configure` →
+**Hardware** → *Watch the optical sensors*.
 
 It lists every optical sensor with its range, `hasHit`, distance and block, live,
 and says which role `/craft.cfg` gives each one — because knowing a sensor works
@@ -768,7 +826,8 @@ Where is it?
 Enter for 40 70 300, or type x y z:
 ```
 
-If GPS answers, setup offers what it found and Enter takes it. If it does not,
+If GPS answers, the wizard offers what it found and Enter takes it. If it does
+not,
 you type three numbers — `40 70 300` or `40,70,300`, either is fine. **GPS is
 only ever a suggestion.** A beacon that depended on it would be a waypoint that
 stopped existing whenever the satellites unloaded, which is the opposite of the
@@ -952,7 +1011,7 @@ Also in the game, as `guide` → *When it goes wrong*.
 | One ship shows **LOST** | Out of modem range, or its chunk is not loaded. An ender modem on the tower is the fix. |
 | Refuses to take off | `preflight` rejected it and said why in the log: no plan, no cruise altitude, no usable fix, or not enough fuel for the distance. |
 | Hands the hull back the moment it starts | No altitude source. The altitude sensor must be part of the assembled contraption and named in `/craft.cfg`. |
-| Holds height but will not navigate | **Run `setup`.** Four different causes look identical from the ship: no block, an unassembled contraption, `nav` switched off in `/craft.cfg`, or `probe` never run. |
+| Holds height but will not navigate | **Run `configure`.** Four different causes look identical from the ship: no block, an unassembled contraption, `nav` switched off in `/craft.cfg`, or nothing configured yet. The front page tells them apart. |
 | Flies confidently the wrong way | `lift` and `main` swapped in `/craft.cfg`, or a mix term with the wrong `scale`. |
 | Climbs like a rocket on takeoff | `hover` far too high, or the mix is driving lift from two terms that add to more than you meant. |
 | Sinks slowly and never climbs | `hover` too low. Raise it; `vsI` will find the rest within a few seconds. |
@@ -963,6 +1022,8 @@ Also in the game, as `guide` → *When it goes wrong*.
 | Stops and climbs for no visible reason | The obstacle or clearance guard. The log says which. |
 | Drifts into a cliff while climbing | Expected, and documented above: a ship has no brakes. Raise `config.reaction`. |
 | Nothing on the **nav** tab | Waypoints live on the tower. Without one, the pocket shows only what ships have cached. |
+| A computer drops into `configure` on every boot | It is not configured, and `startup.lua` will not start a program that cannot work. Finish the wizard and press **ENTER** on Review — nothing is written until you do. |
+| A pilot boots fine with nothing attached | Deliberate. Only the config files stop a boot; missing hardware never does, because a contraption's blocks are not peripherals until it is assembled. |
 | A beacon shows **No position** | Nobody has told it where it is. Press `S`, or run `beacon set`. It will not guess: a marker in the wrong place is worse than none. |
 | Route says **not surveyed** | Nobody has flown it. Not a fault — fly it high, and it will be surveyed for next time. |
 | A ship took off higher than you asked | The route's survey needed it. The log says `terrain`. |
@@ -970,10 +1031,10 @@ Also in the game, as `guide` → *When it goes wrong*.
 | An order is refused, naming somebody | They have control. `TAKE control` on the ship's panel, or wait 90s for it to lapse. |
 | Altitude order refused on a parked ship | It has no altitude to move *from* and none was given. Send an absolute altitude, or check it has an altitude sensor. |
 | Terrain guard fires in clear air | The `ground` sensor is the forward-facing one. `configure` → Instruments, or swap them in `/craft.cfg`. |
-| Cockpit shows `clear --` at altitude | The ground sensor cannot see that far. `probe --eyes` shows its range. The maximum is set on the sensor block itself, and the flight computer cannot raise it past that — it asks, and takes what it is given. |
+| Cockpit shows `clear --` at altitude | The ground sensor cannot see that far. `configure` → Hardware → *Watch the optical sensors* shows its range. The maximum is set on the sensor block itself, and the flight computer cannot raise it past that — it asks, and takes what it is given. |
 | `configure` does not seem to save | **APPLY is at the bottom of the Review pane, below the fold.** Press **ENTER** on that pane instead — it writes everything without scrolling. Nothing is written until one or the other happens; leaving with `q` discards the lot, by design. |
-| Ship says it cannot find the `navigation_table` | Almost always the pilot was started before the contraption was assembled. Fixed as of this version: the pilot now re-resolves its hardware whenever a peripheral attaches. If it persists, `probe --eyes` and `configure` → Instruments. |
-| An instrument works in `setup` but not in `pilot` | Same cause, and this was the tell: `setup` and `configure` have always rescanned on attach, so they could see hardware the flying program had never resolved. |
+| Ship says it cannot find the `navigation_table` | Almost always the pilot was started before the contraption was assembled. Fixed as of this version: the pilot now re-resolves its hardware whenever a peripheral attaches. If it persists, `configure` → Hardware and → Instruments. |
+| An instrument works in `configure` but not in `pilot` | Same cause, and this was the tell: `configure` has always rescanned on attach, so it could see hardware the flying program had never resolved. |
 | Nothing is ever surveyed | Same cause: surveying is built from the ground reading, so a ship that cannot see the ground records nothing. |
 | A control shows **FAULT** on the ship panel | That peripheral is not answering. It has been broken off, or renamed, or was never on the contraption. |
 
@@ -998,6 +1059,13 @@ java -jar ccemux-launcher.jar -r TRoR -c /tmp/run
 `os.shutdown()` at the end, without which the emulator sits at a shell prompt
 forever and a finished suite looks exactly like a hung one.
 
+`os.shutdown()` stops the emulated *computer*, though, not the launcher. The JVM
+stays up afterwards — its update thread keeps the process alive — so a scripted
+run blocks even on a clean pass, which looks exactly like the hang the shim
+exists to prevent. **Read `test-summary.txt` rather than waiting for the process
+to exit**, and give the run a timeout. It is written before the shutdown, so a
+summary on disk means the suite finished whatever the launcher does next.
+
 **[CraftOS-PC](https://www.craftos-pc.cc/)** takes the runner directly:
 
 ```
@@ -1017,10 +1085,11 @@ arithmetic and the wrap, plans and legs, sensor fusion and the ageing of a
 dead-reckoned fix, the PID loops and the integral clamp, every flight state and
 all four guards, the hull abstraction over a mock of the real peripheral API, the
 redstone layer over both a computer's own bus and a relay in all three signal
-shapes, the quaternion attitude maths, the UI's layout arithmetic, `probe.lua`
-round-tripped through the craft file it generates, the bounded log, the debounced state write, and the manifest against the tree. Three
-more drive the real event loops of `pilot.lua`, `server.lua` and `remote.lua`,
-and one drives `install.lua`.
+shapes, the quaternion attitude maths, the UI's layout arithmetic, the rules that
+decide whether a computer may boot at all, the configurator round-tripped through
+the craft file it generates, the bounded log, the debounced state write, and the
+manifest against the tree. Three more drive the real event loops of `pilot.lua`,
+`server.lua` and `remote.lua`, and one drives `install.lua`.
 
 And `fly_spec.lua` actually flies it. The mock carries a small flight model —
 throttle to thrust to acceleration to position, over terrain — and the suite

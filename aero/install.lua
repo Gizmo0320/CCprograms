@@ -2,64 +2,68 @@
 --
 --   wget run https://raw.githubusercontent.com/Gizmo0320/CCprograms/main/aero/install.lua
 --
--- It fetches the file list from manifest.txt and downloads everything to the
--- computer root. The same tree goes on every machine -- startup.lua works out
--- what it is running on -- so there is one thing to install and no way to put
--- the wrong half on the wrong computer.
+--   install                 install, or update if it is already here
+--   install check           say what is here and what is available, write nothing
+--   install update          fetch the current version, keeping every config file
+--   install uninstall       remove the program, and ask about the config files
 --
--- Optional arguments:
---   install <branch> <owner/repo>
---   install --net=north          name the network without being asked
---   install --channel=4300       set the modem channel without being asked
---   install --role=server        pilot | server | beacon
---   install --name=Kestrel       name this computer without being asked
+--   install <mode> <branch> <owner/repo>
+--   install --yes           answer every prompt yes, for an unattended run
 --
--- Pass the flags for an unattended install: without them the prompts wait for a
--- line of input, and read() cannot be given a timeout the way the reboot prompt
--- at the end can.
+-- ## What it does not do any more
 --
--- Like the redstone network and unlike the mining fleet, the role has to be
--- asked. A turtle is obviously a turtle, but a pilot and a tower are both plain
--- computers, and the peripherals that would give it away are on the contraption
--- rather than on the computer.
+-- It does not ask a single question about the network, the channel, the role or
+-- the name. It used to ask all four, `configure` also asked all four, and the
+-- two wrote the file in different shapes -- so which of them you had run last
+-- decided what your computer thought it was.
 --
--- On a pilot this does **not** write a /craft.cfg. That file describes one
--- particular hull and cannot be guessed from here; probe.lua writes it from what
--- is actually attached, and it has to be run on the assembled ship.
+-- An installer installs. `configure` configures, and this hands over to it at
+-- the end of a fresh install, which is also what `startup.lua` does when it
+-- finds a computer that has never been set up. There is one way to answer those
+-- questions and one file they land in.
+--
+-- ## What it keeps
+--
+-- Downloads everything before writing anything. A half-installed tree where
+-- pilot.lua is new and lib/hull.lua is old fails in ways that look like bugs in
+-- neither, and on this program it fails in the air. Writes beside each target
+-- and moves into place, so an interrupted write leaves the old working copy
+-- rather than half a file. Never touches /aero.cfg, /craft.cfg or /beacon.cfg,
+-- none of which are in manifest.txt for exactly that reason.
 
 local args = { ... }
 
-local NETWORK, CHANNEL, NAME, ROLE
+--------------------------------------------------------------------------------
+-- Arguments
+--------------------------------------------------------------------------------
+
+local MODES = { check = true, install = true, update = true, uninstall = true }
+
+local MODE, YES = nil, false
 local positional = {}
+
 for _, a in ipairs(args) do
-  local netArg  = a:match("^%-%-net=(.+)$")
-  local chanArg = a:match("^%-%-channel=(%d+)$")
-  local nameArg = a:match("^%-%-name=(.+)$")
-  local roleArg = a:match("^%-%-role=(%a+)$")
-  if netArg then NETWORK = netArg
-  elseif chanArg then CHANNEL = tonumber(chanArg)
-  elseif nameArg then NAME = nameArg
-  elseif roleArg then ROLE = roleArg:lower()
-  elseif a ~= "" then positional[#positional + 1] = a end
+  if a == "--yes" or a == "-y" then YES = true
+  elseif MODES[a:lower()] and not MODE then MODE = a:lower()
+  elseif a ~= "" and not a:match("^%-") then positional[#positional + 1] = a end
 end
 
 local BRANCH = positional[1] or "main"
 local REPO   = positional[2] or "Gizmo0320/CCprograms"
 local BASE   = ("https://raw.githubusercontent.com/%s/%s/aero/"):format(REPO, BRANCH)
 
-local OVERRIDES = "/aero.cfg"
+-- What was installed last time: the version and the file list. Kept so an
+-- update can delete the files that used to be part of the program and are not
+-- any more -- an orphaned lib/ module still sitting there is one `require` away
+-- from being loaded in preference to nothing at all.
+local RECORD = "/aero.install"
 
--- Mirrors the defaults in lib/config.lua. Naming them here is what lets this
--- skip writing an overrides file at all for a plain single-network setup, so
--- there is nothing extra to explain to anyone reading the tree later.
-local DEFAULT_NET     = "aero"
-local DEFAULT_CHANNEL = 1618
-local DEFAULT_ROLE    = "pilot"
-
+--------------------------------------------------------------------------------
+-- Screen
 --------------------------------------------------------------------------------
 
 local function colour(c)
-  if term.isColour() then term.setTextColour(c) end
+  if term.isColour and term.isColour() then term.setTextColour(c) end
 end
 
 local function say(text, c)
@@ -68,26 +72,99 @@ local function say(text, c)
   colour(colours.white)
 end
 
---- Fetch a file. The cache buster matters: raw.githubusercontent serves a
---- cached copy for a few minutes, and reinstalling to pick up a fix you just
---- pushed only to be handed the old file is a genuinely baffling way to lose an
---- afternoon.
-local function fetch(path)
-  local url = BASE .. path .. "?nocache=" .. tostring(math.random(1, 1e9))
-  local res, err = http.get(url)
-  if not res then return nil, tostring(err or "no response") end
-  local body = res.readAll()
-  res.close()
-  if not body or #body == 0 then return nil, "empty file" end
-  return body
+local function rule()
+  local w = term.getSize()
+  colour(colours.grey)
+  print(string.rep("-", w))
+  colour(colours.white)
+end
+
+--- A progress bar on the bottom line, and the cursor put back where it was.
+--
+-- On the bottom line rather than inline because the file list scrolls: a bar
+-- that scrolls with it is a bar you cannot find, and one redrawn per file is
+-- most of the screen by the end.
+local function progress(done, total, label)
+  local w, h = term.getSize()
+  local x, y = term.getCursorPos()
+
+  local filled = math.floor((done / math.max(1, total)) * w + 0.5)
+  local text = (" %d%%  %s"):format(math.floor(done / math.max(1, total) * 100),
+                                    label or "")
+  if #text > w then text = text:sub(1, w) end
+  text = text .. string.rep(" ", w - #text)
+
+  for i = 1, w do
+    term.setCursorPos(i, h)
+    if term.isColour and term.isColour() then
+      term.setBackgroundColour(i <= filled and colours.lightBlue or colours.grey)
+      term.setTextColour(i <= filled and colours.black or colours.white)
+    end
+    term.write(text:sub(i, i))
+  end
+
+  if term.isColour and term.isColour() then
+    term.setBackgroundColour(colours.black)
+    term.setTextColour(colours.white)
+  end
+  term.setCursorPos(x, y)
+end
+
+local function clearProgress()
+  local w, h = term.getSize()
+  local x, y = term.getCursorPos()
+  term.setCursorPos(1, h)
+  term.write(string.rep(" ", w))
+  term.setCursorPos(x, y)
+end
+
+--- A yes/no question that an unattended run can answer.
+local function confirm(question)
+  if YES then return true end
+  say(question .. " (y/N)", colours.yellow)
+  while true do
+    local event, key = os.pullEvent()
+    if event == "char" then return key == "y" or key == "Y" end
+    if event == "key" and key == keys.enter then return false end
+    if event == "terminate" then return false end
+  end
+end
+
+--------------------------------------------------------------------------------
+-- Fetching
+--------------------------------------------------------------------------------
+
+--- Fetch a file, with retries.
+--
+-- The cache buster matters: raw.githubusercontent serves a cached copy for a few
+-- minutes, and reinstalling to pick up a fix you just pushed only to be handed
+-- the old file is a genuinely baffling way to lose an afternoon.
+--
+-- Retried three times because the failure this sees most is a single request
+-- timing out under load, and failing the whole install for it means starting
+-- over from the beginning.
+local function fetch(path, attempts)
+  local why
+  for _ = 1, attempts or 3 do
+    local url = BASE .. path .. "?nocache=" .. tostring(math.random(1, 1e9))
+    local res, err = http.get(url)
+
+    if res then
+      local body = res.readAll()
+      res.close()
+      if body and #body > 0 then return body end
+      why = "empty file"
+    else
+      why = tostring(err or "no response")
+    end
+  end
+  return nil, why
 end
 
 local function writeFile(path, body)
   local dir = fs.getDir(path)
   if dir ~= "" and not fs.exists(dir) then fs.makeDir(dir) end
 
-  -- Write beside the target and move into place, so an interrupted install
-  -- leaves the old working copy rather than half a file.
   local tmp = path .. ".part"
   local file = fs.open(tmp, "w")
   if not file then return false, "cannot write " .. tmp end
@@ -99,13 +176,86 @@ local function writeFile(path, body)
   return true
 end
 
+--- Parse manifest.txt into a file list and whatever version it declares.
+--
+-- The version rides in a comment so the manifest stays exactly the plain list of
+-- paths that `test/spec.lua` checks against the tree in both directions.
+local function parseManifest(body)
+  local files, version = {}, nil
+
+  for line in body:gmatch("[^\r\n]+") do
+    local declared = line:match("^#%s*version%s+([%w%.%-]+)")
+    if declared then version = declared end
+
+    line = line:match("^%s*(.-)%s*$")
+    if line ~= "" and not line:match("^#") then files[#files + 1] = line end
+  end
+
+  return files, version
+end
+
+--------------------------------------------------------------------------------
+-- What is here already
+--------------------------------------------------------------------------------
+
+local function readRecord()
+  if not fs.exists(RECORD) then return nil end
+  local fn = loadfile(RECORD)
+  if not fn then return nil end
+  local ok, value = pcall(fn)
+  if ok and type(value) == "table" then return value end
+  return nil
+end
+
+local function writeRecord(version, files)
+  local out = {
+    "-- What `install` last put on this computer.",
+    "--",
+    "-- Read by the installer to work out which files used to be part of the",
+    "-- program and are not any more. Not in manifest.txt, and safe to delete --",
+    "-- losing it only costs the next update its orphan cleanup.",
+    "",
+    "return {",
+    ("  version = %q,"):format(version or "unknown"),
+    ("  branch  = %q,"):format(BRANCH),
+    ("  repo    = %q,"):format(REPO),
+    "  files = {",
+  }
+  for _, path in ipairs(files) do
+    out[#out + 1] = ("    %q,"):format(path)
+  end
+  out[#out + 1] = "  },"
+  out[#out + 1] = "}"
+
+  local f = fs.open(RECORD, "w")
+  if not f then return false end
+  for _, line in ipairs(out) do f.writeLine(line) end
+  f.close()
+  return true
+end
+
+--- The version currently on this computer, read out of the installed config.
+local function localVersion()
+  if not fs.exists("/lib/config.lua") then return nil end
+  local record = readRecord()
+  if record and record.version and record.version ~= "unknown" then
+    return record.version
+  end
+
+  local fn = loadfile("/lib/config.lua")
+  if not fn then return nil end
+  local ok, value = pcall(fn)
+  if ok and type(value) == "table" then return value.version end
+  return nil
+end
+
 --------------------------------------------------------------------------------
 
 term.clear()
 term.setCursorPos(1, 1)
 say("Aeronautics flight network installer", colours.cyan)
 say(REPO .. " @ " .. BRANCH, colours.grey)
-print()
+rule()
 
 if not http then
   say("The HTTP API is disabled.", colours.red)
@@ -113,7 +263,69 @@ if not http then
   return
 end
 
-say("Fetching manifest...", colours.lightGrey)
+local installed = localVersion()
+
+--------------------------------------------------------------------------------
+-- Uninstall
+--------------------------------------------------------------------------------
+
+if MODE == "uninstall" then
+  local record = readRecord()
+  if not record then
+    say("Nothing here was installed by this installer.", colours.orange)
+    say("Delete the files by hand if you want them gone.", colours.white)
+    return
+  end
+
+  -- `files` defaulted rather than indexed straight: a record written by an
+  -- older version, or edited by hand, is a table this has to survive reading.
+  record.files = record.files or {}
+
+  say(("About to remove %d file(s) of aero %s.")
+    :format(#record.files, record.version or "?"), colours.orange)
+
+  if not confirm("Remove the program?") then
+    say("Left alone.", colours.lime)
+    return
+  end
+
+  local gone = 0
+  for _, path in ipairs(record.files) do
+    if fs.exists("/" .. path) then
+      fs.delete("/" .. path)
+      gone = gone + 1
+    end
+  end
+  fs.delete(RECORD)
+  say(("Removed %d file(s)."):format(gone), colours.lime)
+
+  -- Asked separately and last, because these are the only files here that
+  -- somebody made rather than downloaded. A hull tuned over an evening is worth
+  -- more than the program, and it is one keypress from being gone.
+  local mine = {}
+  for _, path in ipairs({ "/aero.cfg", "/craft.cfg", "/beacon.cfg",
+                          "/aero.state", "/fleet.state" }) do
+    if fs.exists(path) then mine[#mine + 1] = path end
+  end
+
+  if #mine > 0 then
+    print()
+    say("These are yours, and were left alone:", colours.cyan)
+    for _, path in ipairs(mine) do say("  " .. path, colours.white) end
+    if confirm("Delete these too?") then
+      for _, path in ipairs(mine) do fs.delete(path) end
+      say("Deleted.", colours.lime)
+    end
+  end
+  return
+end
+
+--------------------------------------------------------------------------------
+-- The manifest
+--------------------------------------------------------------------------------
+
+say("Fetching the file list...", colours.lightGrey)
+
 local manifest, why = fetch("manifest.txt")
 if not manifest then
   say("Could not fetch the file list: " .. why, colours.red)
@@ -121,279 +333,176 @@ if not manifest then
   return
 end
 
-local files = {}
-for line in manifest:gmatch("[^\r\n]+") do
-  line = line:match("^%s*(.-)%s*$")
-  if line ~= "" and not line:match("^#") then files[#files + 1] = line end
-end
+local files, available = parseManifest(manifest)
 
 if #files == 0 then
   say("The manifest is empty. Nothing to install.", colours.red)
   return
 end
 
--- Download everything before writing anything: a half-installed tree where
--- pilot.lua is new and lib/hull.lua is old fails in ways that look like bugs in
--- neither, and on this program it fails in the air.
-local bodies, failed = {}, {}
-for i, path in ipairs(files) do
-  term.write(("[%d/%d] %s"):format(i, #files, path))
-  local body, err = fetch(path)
-  if body then
-    bodies[path] = body
-    say("  ok", colours.lime)
-  else
-    failed[#failed + 1] = path .. " (" .. err .. ")"
-    say("  FAILED", colours.red)
-  end
-end
+print()
+say(("installed  %s"):format(installed or "nothing"),
+    installed and colours.cyan or colours.grey)
+say(("available  %s"):format(available or "?"), colours.cyan)
+say(("files      %d"):format(#files), colours.grey)
 
-if #failed > 0 then
+--------------------------------------------------------------------------------
+-- Check
+--------------------------------------------------------------------------------
+
+if MODE == "check" then
   print()
-  say("Nothing was installed. These could not be downloaded:", colours.red)
-  for _, f in ipairs(failed) do say("  " .. f, colours.white) end
+  if not installed then
+    say("Not installed here. Run `install` to put it on.", colours.orange)
+  elseif installed == available then
+    say("Up to date.", colours.lime)
+  else
+    say(("An update is available: %s -> %s"):format(installed, available),
+        colours.orange)
+  end
+
+  -- Said even when up to date: a file deleted by hand is invisible from the
+  -- version number, and it is exactly the state that makes a program fail in a
+  -- way nothing explains.
+  local missing = {}
+  for _, path in ipairs(files) do
+    if not fs.exists("/" .. path) then missing[#missing + 1] = path end
+  end
+  if #missing > 0 then
+    print()
+    say(("%d file(s) missing from this computer:"):format(#missing), colours.red)
+    for _, path in ipairs(missing) do say("  " .. path, colours.white) end
+    say("Run `install` to put them back.", colours.white)
+  end
   return
 end
 
+--------------------------------------------------------------------------------
+-- Install and update
+--------------------------------------------------------------------------------
+
+local fresh = (installed == nil)
+
+if MODE == "update" and fresh then
+  say("Nothing is installed here, so this is an install.", colours.orange)
+end
+
 print()
-for path, body in pairs(bodies) do
-  local ok, err = writeFile("/" .. path, body)
+
+local bodies, failed = {}, {}
+for i, path in ipairs(files) do
+  progress(i - 1, #files, path)
+
+  local body, err = fetch(path)
+  if body then
+    bodies[path] = body
+  else
+    failed[#failed + 1] = path .. " (" .. err .. ")"
+  end
+end
+
+progress(#files, #files, "done")
+
+if #failed > 0 then
+  clearProgress()
+  print()
+  say("Nothing was installed. These could not be downloaded:", colours.red)
+  for _, f in ipairs(failed) do say("  " .. f, colours.white) end
+  say("Nothing on this computer was changed.", colours.white)
+  return
+end
+
+for _, path in ipairs(files) do
+  local ok, err = writeFile("/" .. path, bodies[path])
   if not ok then
+    clearProgress()
     say("Could not write " .. path .. ": " .. tostring(err), colours.red)
     return
   end
 end
 
-say(("Installed %d file(s)."):format(#files), colours.lime)
+clearProgress()
+say(("Installed %d file(s), version %s."):format(#files, available or "?"),
+    colours.lime)
 
 --------------------------------------------------------------------------------
--- Which network is this?
+-- Orphans
 --------------------------------------------------------------------------------
 
-local function currentConfig()
-  if not fs.exists(OVERRIDES) then return {} end
-  local fn = loadfile(OVERRIDES)
-  if not fn then return {} end
-  local ok, cfg = pcall(fn)
-  if ok and type(cfg) == "table" then return cfg end
-  return {}
-end
+local previous = readRecord()
+if previous then
+  local wanted = {}
+  for _, path in ipairs(files) do wanted[path] = true end
 
---- A network name rides in every frame and shows up in narrow columns on
---- screen. Anything outside this is more likely a typo than an intention.
-local function sanitise(name)
-  name = tostring(name):match("^%s*(.-)%s*$")
-  name = name:gsub("[^%w%-_]", "")
-  return name:sub(1, 24)
-end
-
-local existing = currentConfig()
-
-if not NETWORK then
-  print()
-  if existing.protocol then
-    say("This computer is on network '" .. existing.protocol .. "'.", colours.lightGrey)
-    say("Enter to keep it, or type a new name:", colours.yellow)
-  else
-    say("Network name? Computers only talk to others on", colours.yellow)
-    say("the same one. Enter for '" .. DEFAULT_NET .. "':", colours.yellow)
-  end
-  term.setTextColour(colours.white)
-  NETWORK = read()
-end
-
-NETWORK = sanitise(NETWORK or "")
-if NETWORK == "" then NETWORK = existing.protocol or DEFAULT_NET end
-
--- The channel is the port, and the thing that actually separates two networks:
--- a modem never raises an event for a channel it has not opened. The default is
--- neither the mining fleet's nor the redstone network's, so one world can run
--- all three without any of them being told about the others.
-if not CHANNEL then
-  print()
-  local current = existing.channel or DEFAULT_CHANNEL
-  say("Modem channel (1-65535)? This is the port, and", colours.yellow)
-  say("what really keeps two networks apart.", colours.yellow)
-  say("Enter for " .. current .. ":", colours.yellow)
-  term.setTextColour(colours.white)
-  CHANNEL = tonumber(read())
-end
-
-CHANNEL = math.floor(tonumber(CHANNEL) or 0)
-if CHANNEL < 1 or CHANNEL > 65535 then
-  CHANNEL = existing.channel or DEFAULT_CHANNEL
-end
-
---------------------------------------------------------------------------------
--- What is this computer for?
---------------------------------------------------------------------------------
-
-local isPocket = pocket ~= nil
-
-if isPocket then
-  ROLE = "remote"
-elseif not ROLE then
-  print()
-  local current = existing.role or DEFAULT_ROLE
-  say("Is this a pilot, the tower, or a beacon?", colours.yellow)
-  say("A pilot rides the contraption and flies it. The", colours.white)
-  say("tower holds the waypoints and the log, and there", colours.white)
-  say("is one of it. A beacon stands still and is a", colours.white)
-  say("waypoint: put one where you want ships to go.", colours.white)
-  say("Enter for '" .. current .. "':", colours.yellow)
-  term.setTextColour(colours.white)
-  ROLE = read()
-end
-
-ROLE = tostring(ROLE or ""):lower():gsub("%s", "")
-if ROLE == "tower" then ROLE = "server" end
-if ROLE == "ship" then ROLE = "pilot" end
-if ROLE == "waypoint" then ROLE = "beacon" end
-if ROLE ~= "pilot" and ROLE ~= "server" and ROLE ~= "remote"
-   and ROLE ~= "beacon" then
-  ROLE = existing.role or DEFAULT_ROLE
-end
-
--- Only write the file when something differs from the defaults, so a plain
--- single-network setup has nothing extra to explain.
-if NETWORK ~= DEFAULT_NET or CHANNEL ~= DEFAULT_CHANNEL or ROLE ~= DEFAULT_ROLE then
-  local f = fs.open(OVERRIDES, "w")
-  if f then
-    f.write(("-- Written by install.lua. Not in manifest.txt, so `update`\n"
-      .. "-- will not replace it. Edit freely; anything here overrides\n"
-      .. "-- the defaults in lib/config.lua.\n"
-      .. "return {\n  protocol = %q,\n  channel  = %d,\n  role     = %q,\n}\n")
-      :format(NETWORK, CHANNEL, ROLE))
-    f.close()
-  end
-elseif fs.exists(OVERRIDES) then
-  -- Explicitly back to the defaults: drop the override rather than leave a file
-  -- saying one thing while the computer is doing another.
-  fs.delete(OVERRIDES)
-end
-
-print()
-say(("Network '%s' on channel %d, as %s"):format(NETWORK, CHANNEL, ROLE), colours.cyan)
-
---------------------------------------------------------------------------------
--- Name
---------------------------------------------------------------------------------
-
--- The name is the only thing distinguishing one row of the fleet table from
--- another besides a number, and "Kestrel" tells you which thing is about to come
--- down in a field in a way that "computer 7" does not.
---
--- It lives in the computer's own label rather than /aero.cfg: a label already
--- survives updates, reboots, and being broken and replaced, and CC's own `label`
--- program can read and set it without this program involved.
-local suggested = os.getComputerLabel() or (ROLE .. "-" .. os.getComputerID())
-
-if not NAME then
-  print()
-  say("Name for this " .. ROLE .. "? Enter for '" .. suggested .. "':", colours.yellow)
-  term.setTextColour(colours.white)
-  NAME = read()
-end
-
-NAME = sanitise(NAME or "")
-if NAME == "" then NAME = suggested end
-os.setComputerLabel(NAME)
-say("Named " .. NAME, colours.cyan)
-
---------------------------------------------------------------------------------
-
--- The hardware, checked here rather than described. The installer is the first
--- and often only time anybody reads what a role needs, and a list of what is
--- actually missing on this computer beats a paragraph about what one might.
-local needs = nil
-do
-  local ok, module = pcall(dofile, "/lib/needs.lua")
-  if ok then needs = module end
-end
-
-print()
-if needs then
-  local found = {}
-  for _, side in ipairs(peripheral.getNames()) do
-    local entry = { type = peripheral.getType(side) }
-    if entry.type == "modem" then
-      entry.wireless = peripheral.call(side, "isWireless")
-    end
-    found[#found + 1] = entry
-  end
-
-  local rows, summary = needs.check(ROLE, found)
-  local verdict, mood = needs.verdict(summary, ROLE)
-
-  say("Hardware on this computer:", colours.cyan)
-  for _, row in ipairs(rows) do
-    if row.ok then
-      say(("  yes  %s"):format(row.item.what), colours.lime)
-    elseif row.item.tier == "required" then
-      say(("  NO   %s"):format(row.item.what), colours.red)
-      say(("       %s"):format(row.item.why), colours.white)
-    else
-      say(("  --   %s"):format(row.item.what), colours.lightGrey)
+  local orphans = {}
+  for _, path in ipairs(previous.files or {}) do
+    if not wanted[path] and fs.exists("/" .. path) then
+      orphans[#orphans + 1] = path
     end
   end
 
-  say(verdict, mood == "ok" and colours.lime
-      or (mood == "warn" and colours.orange or colours.red))
-  say("Run `setup` any time to see this again -- it", colours.white)
-  say("re-checks while you watch, so you can go and", colours.white)
-  say("place the missing block.", colours.white)
-
-  if ROLE == "server" then
+  if #orphans > 0 then
     print()
-    say("An ender modem here is worth it: range decides", colours.white)
-    say("whether you hear about a diversion now or when", colours.white)
-    say("the ship lands.", colours.white)
+    say("These were part of the program and are not any more:", colours.orange)
+    for _, path in ipairs(orphans) do say("  " .. path, colours.white) end
+
+    -- Worth asking rather than doing. An orphan is harmless sitting there, and
+    -- deleting a file somebody has started keeping their own notes in would be
+    -- a poor trade for the tidiness.
+    if confirm("Delete them?") then
+      for _, path in ipairs(orphans) do fs.delete("/" .. path) end
+      say(("Deleted %d."):format(#orphans), colours.lime)
+    end
   end
 end
 
-if ROLE == "beacon" then
-  print()
-  say("Next: run `beacon` on this computer. It asks for", colours.yellow)
-  say("a name, whether it is a pad, and where it is --", colours.yellow)
-  say("and then it is a waypoint. Nothing to wire up.", colours.yellow)
-end
+writeRecord(available, files)
 
-if ROLE == "pilot" then
-  print()
-  if fs.exists("/craft.cfg") then
-    say("Kept your /craft.cfg.", colours.lightGrey)
-  else
-    -- Deliberately not generated here. The hull is the one thing an installer
-    -- running before the ship is assembled cannot possibly know, and a wrong
-    -- guess is worse than none: a mix that names the lift bearing as the main
-    -- one is a ship that accelerates into the ground.
-    say("Next: assemble the ship, then run `probe` on this", colours.yellow)
-    say("computer. It writes /craft.cfg from what is really", colours.yellow)
-    say("attached. Nothing will fly until it has.", colours.yellow)
-  end
-end
+--------------------------------------------------------------------------------
+-- Hand over
+--------------------------------------------------------------------------------
 
 print()
--- Said on every machine, and last, so it is the line still on screen. The whole
--- manual ships with the program precisely so nobody has to go and find it.
-say("Type `guide` for the manual: first flight, the", colours.white)
-say("hull file, the guards, tuning and what to do when", colours.white)
-say("it goes wrong.", colours.white)
 
+local configured = fs.exists("/aero.cfg")
+
+if configured then
+  -- An update on a computer somebody has already set up asks nothing and
+  -- changes nothing about it. Dropping a working tower into a wizard because it
+  -- fetched a new pilot.lua would be an unpleasant surprise.
+  say("Your settings were left alone.", colours.lime)
+  say("Run `configure` to change them, or reboot to start.", colours.white)
+  return
+end
+
+say("Now to set this computer up.", colours.cyan)
+say("It will ask what this computer is, which network", colours.white)
+say("it is on, and -- on a ship -- which bearing holds", colours.white)
+say("it up. Nothing is written until the end.", colours.white)
 print()
-say("Reboot to start? (y/N, continues on its own in 15s)", colours.yellow)
 
--- Timed rather than a bare pullEvent. Installing across a row of computers is a
--- reasonable thing to script, and a prompt that waits forever turns that into a
--- row of computers sitting at a question nobody is there to answer.
-local deadline = os.startTimer(15)
-while true do
-  local event, a = os.pullEvent()
-  if event == "char" then
-    if a == "y" or a == "Y" then os.reboot() end
-    break
-  elseif event == "timer" and a == deadline then
-    say("No answer; leaving it to you.", colours.grey)
-    break
+if not YES then
+  say("Press a key to start, or Q to do it later.", colours.yellow)
+  local timer = os.startTimer(20)
+  while true do
+    local event, a = os.pullEvent()
+    if event == "char" then
+      if a == "q" or a == "Q" then
+        say("Run `configure` when you are ready.", colours.white)
+        return
+      end
+      break
+    elseif event == "key" and a == keys.enter then
+      break
+    elseif event == "timer" and a == timer then
+      -- Bounded, so installing across a row of computers is scriptable. A
+      -- prompt that waits forever turns that into a row of computers sitting at
+      -- a question nobody is there to answer.
+      break
+    elseif event == "terminate" then
+      return
+    end
   end
 end
+
+shell.run("/configure.lua", "--wizard")

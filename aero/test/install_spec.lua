@@ -12,6 +12,14 @@
 --
 -- Runs last, and writes to the computer root the tree under test lives in.
 --
+-- ## What changed when the installer stopped configuring
+--
+-- It used to ask for the network, the channel, the role and the name, and most
+-- of this suite was about those four questions. It asks none of them now:
+-- `configure` owns every one, and the installer's last act on a fresh computer
+-- is to hand over to it. So the cases here are about the four modes, the version
+-- comparison, what gets left alone, and that the hand-off actually happens.
+--
 -- CC's `write` calls term.write once per **word**, so a recording terminal has
 -- to join its segments with nothing between them or every phrase comes back cut
 -- in half. That is what `capture` below does.
@@ -50,13 +58,14 @@ end
 local unpack = table.unpack or unpack
 
 local OVERRIDES = "/aero.cfg"
+local RECORD    = "/aero.install"
 
 local realHttp   = _G.http
-local realRead   = _G.read
 local realReboot = os.reboot
 local realLabel  = os.getComputerLabel()
 local realPocket = _G.pocket
 local realTimer  = os.startTimer
+local realShell  = _G.shell
 
 --------------------------------------------------------------------------------
 
@@ -67,6 +76,12 @@ local function readFile(path)
   local body = f.readAll()
   f.close()
   return body
+end
+
+local function writeFile(path, body)
+  local f = fs.open(path, "w")
+  f.write(body)
+  f.close()
 end
 
 --- An http that serves the tree under test.
@@ -83,6 +98,16 @@ local function stubHttp(opts)
 
       if opts.missing and opts.missing[path] then return nil, "404" end
 
+      -- A case that wants to look like a newer release rewrites the version
+      -- comment rather than the file list, because the file list has to keep
+      -- naming files that really exist in the tree being served.
+      if path == "manifest.txt" and opts.remoteVersion then
+        local body = readFile("/manifest.txt")
+        body = body:gsub("# version [%w%.%-]+",
+                         "# version " .. opts.remoteVersion, 1)
+        return { readAll = function() return body end, close = function() end }
+      end
+
       local body = readFile("/" .. path)
       if not body then return nil, "404" end
 
@@ -98,34 +123,29 @@ local function stubHttp(opts)
   }
 end
 
---- Run the installer with a script of typed answers, capturing what it printed.
+--- Run the installer, capturing what it printed and what it handed off to.
 local function runInstall(opts)
   opts = opts or {}
 
-  fs.delete(OVERRIDES)
-  os.setComputerLabel(opts.label)
   _G.pocket = opts.pocket and {} or nil
-
-  local answers = opts.answers or {}
-  local asked = 0
-  _G.read = function()
-    asked = asked + 1
-    return answers[asked] or ""
-  end
-
   _G.http = stubHttp(opts)
 
   local rebooted = false
   os.reboot = function() rebooted = true error("rebooted", 0) end
 
-  -- The reboot prompt is timed rather than a bare pullEvent, so an unattended
-  -- install does not leave a row of computers sitting at a question. Firing the
-  -- timer immediately is how the case gets past it without waiting fifteen
-  -- seconds of wall clock.
-  local deadline
-  os.startTimer = function(t)
-    deadline = realTimer(0)
-    return deadline
+  -- The hand-off is the installer's last act, and running it for real would
+  -- drop the whole suite into an interactive configurator. Recorded instead,
+  -- which is also the only way to assert that it happened.
+  local ran = {}
+  _G.shell = setmetatable({
+    run = function(...) ran[#ran + 1] = table.concat({ ... }, " ") return true end,
+  }, { __index = realShell })
+
+  -- Prompts that are not answered by --yes are timed rather than bare, so an
+  -- unattended install does not leave a row of computers sitting at a question.
+  -- Firing the timer immediately is how a case gets past one without waiting.
+  os.startTimer = function()
+    return realTimer(0)
   end
 
   local printed = {}
@@ -139,7 +159,6 @@ local function runInstall(opts)
 
   -- loadfile, not dofile: CC's dofile takes no arguments beyond the path, so
   -- every flag was silently dropped and the installer fell back to prompting.
-  -- The symptom was four questions asked in a case that passed four flags.
   local chunk, loadErr = loadfile("/install.lua")
   local old = term.redirect(recorder)
   local ok, err = true, nil
@@ -150,8 +169,8 @@ local function runInstall(opts)
   end
   term.redirect(old)
 
-  _G.http, _G.read, os.reboot, _G.pocket, os.startTimer =
-    realHttp, realRead, realReboot, realPocket, realTimer
+  _G.http, os.reboot, _G.pocket, os.startTimer, _G.shell =
+    realHttp, realReboot, realPocket, realTimer, realShell
 
   local crash = nil
   if not ok and not tostring(err):find("rebooted", 1, true) then
@@ -161,7 +180,7 @@ local function runInstall(opts)
   return {
     said = table.concat(printed, ""),
     rebooted = rebooted,
-    asked = asked,
+    handedOff = table.concat(ran, "; "),
     crash = crash,
   }
 end
@@ -170,22 +189,26 @@ local function said(r, text)
   return tostring(r.said):find(text, 1, true) ~= nil
 end
 
+--- The state a fresh computer is in: no settings, no install record.
+local function fresh()
+  fs.delete(OVERRIDES)
+  fs.delete(RECORD)
+end
+
 --------------------------------------------------------------------------------
 section("downloading")
 --------------------------------------------------------------------------------
 
 do
-  local r = runInstall{
-    args = { "main", "Gizmo0320/CCprograms", "--net=aero", "--channel=1618",
-             "--role=pilot", "--name=Kestrel" },
-  }
+  fresh()
+  local r = runInstall{ args = { "install", "main", "Gizmo0320/CCprograms", "--yes" } }
 
   check(r.crash == nil, "the installer runs", r.crash)
   check(said(r, "Installed"), "and says what it installed", r.said:sub(1, 120))
   check(fs.exists("/pilot.lua"), "pilot.lua is there")
   check(fs.exists("/lib/hull.lua"), "and the library with it")
-  check(r.asked == 0, "the flags answer every prompt, for an unattended install",
-        r.asked)
+  check(fs.exists("/lib/cfg.lua"), "including the one the configurator needs")
+  check(fs.exists(RECORD), "and it records what it put on")
 end
 
 do
@@ -196,8 +219,7 @@ do
 
   local r = runInstall{
     missing = { ["lib/flight.lua"] = true },
-    args = { "main", "Gizmo0320/CCprograms", "--net=aero", "--channel=1618",
-             "--role=pilot", "--name=Kestrel" },
+    args = { "install", "main", "Gizmo0320/CCprograms", "--yes" },
   }
 
   check(said(r, "Nothing was installed"), "a failed download installs nothing")
@@ -208,134 +230,177 @@ end
 do
   local r = runInstall{
     missing = { ["manifest.txt"] = true },
-    args = { "main", "Gizmo0320/CCprograms", "--net=aero", "--channel=1618",
-             "--role=pilot", "--name=Kestrel" },
+    args = { "install", "main", "Gizmo0320/CCprograms", "--yes" },
   }
   check(said(r, "Could not fetch the file list"),
         "no manifest is a clear message rather than a stack trace")
 end
 
 --------------------------------------------------------------------------------
-section("configuration")
+section("check, which writes nothing")
 --------------------------------------------------------------------------------
 
 do
-  -- Everything at its default, so there is nothing to write down. A tree with no
-  -- overrides file is one less thing to explain to whoever reads it later.
-  local r = runInstall{
-    args = { "main", "Gizmo0320/CCprograms", "--net=aero", "--channel=1618",
-             "--role=pilot", "--name=Kestrel" },
-  }
-  check(not fs.exists(OVERRIDES),
-        "a plain default setup writes no overrides file")
+  -- The installed version is read back out of the record the last install left.
+  local r = runInstall{ args = { "check", "main", "Gizmo0320/CCprograms" } }
+  check(r.crash == nil, "check runs", r.crash)
+  check(said(r, "installed"), "and says what is on this computer")
+  check(said(r, "available"), "and what is on the branch")
+  check(said(r, "Up to date"), "and that they are the same", r.said:sub(-80))
 end
 
 do
-  local r = runInstall{
-    args = { "main", "Gizmo0320/CCprograms", "--net=north", "--channel=4300",
-             "--role=server", "--name=Tower" },
-  }
-  check(fs.exists(OVERRIDES), "anything else does")
-
-  local cfg = loadfile(OVERRIDES)
-  local ok, values = pcall(cfg)
-  check(ok and values.protocol == "north", "with the network name",
-        ok and values.protocol)
-  check(ok and values.channel == 4300, "the channel", ok and values.channel)
-  check(ok and values.role == "server", "and the role", ok and values.role)
+  -- A newer version on the branch is the case the mode exists for.
+  local r = runInstall{ remoteVersion = "9.9",
+                        args = { "check", "main", "Gizmo0320/CCprograms" } }
+  check(said(r, "An update is available"), "an older local version is noticed")
+  check(said(r, "9.9"), "and the new one is named", r.said:sub(-80))
 end
 
 do
-  -- Explicitly back to the defaults. The file is deleted rather than left
-  -- saying one thing while the computer does another.
-  local r = runInstall{
-    args = { "main", "Gizmo0320/CCprograms", "--net=aero", "--channel=1618",
-             "--role=pilot", "--name=Kestrel" },
-  }
-  check(not fs.exists(OVERRIDES),
-        "going back to the defaults removes the overrides file")
-end
+  -- A file deleted by hand is invisible from the version number, and is exactly
+  -- the state that makes a program fail in a way nothing explains.
+  local keep = readFile("/lib/terrain.lua")
+  fs.delete("/lib/terrain.lua")
 
-do
-  -- A channel outside the range is a typo, and falling back beats a network on
-  -- channel 0 that never speaks to anything.
-  local r = runInstall{
-    args = { "main", "Gizmo0320/CCprograms", "--net=aero", "--channel=99999",
-             "--role=pilot", "--name=Kestrel" },
-  }
-  check(said(r, "1618"), "an impossible channel falls back to the default",
-        r.said:match("channel %d+"))
-end
+  local r = runInstall{ args = { "check", "main", "Gizmo0320/CCprograms" } }
+  check(said(r, "missing from this computer"), "a missing file is reported")
+  check(said(r, "lib/terrain.lua"), "and named")
 
-do
-  -- A pocket computer is always the remote, and is not asked.
-  local r = runInstall{
-    pocket = true,
-    args = { "main", "Gizmo0320/CCprograms", "--net=aero", "--channel=1618",
-             "--name=Pocket" },
-  }
-  check(said(r, "as remote"), "a pocket computer installs as the remote",
-        r.said:match("as %a+"))
-end
-
-do
-  -- "tower" and "ship" are what anyone would actually type.
-  local r = runInstall{
-    args = { "main", "Gizmo0320/CCprograms", "--net=aero", "--channel=1618",
-             "--role=tower", "--name=Base" },
-  }
-  check(said(r, "as server"), "'tower' is accepted as the server role",
-        r.said:match("as %a+"))
+  writeFile("/lib/terrain.lua", keep)
+  check(fs.exists("/lib/terrain.lua"), "and the suite puts it back")
 end
 
 --------------------------------------------------------------------------------
-section("prompts and naming")
+section("orphans")
 --------------------------------------------------------------------------------
 
 do
-  -- No flags: every prompt is asked, in order -- network, channel, role, name.
-  local r = runInstall{
-    answers = { "north", "4300", "pilot", "Merlin" },
-    args = { "main", "Gizmo0320/CCprograms" },
-  }
-  check(r.asked == 4, "four questions with no flags", r.asked)
-  check(os.getComputerLabel() == "Merlin", "and the answer becomes the label",
-        os.getComputerLabel())
+  -- A file that used to be part of the program and is not any more. An orphaned
+  -- lib/ module still sitting there is one `require` away from being loaded in
+  -- preference to nothing at all -- which is how a deleted probe.lua could go on
+  -- being run for weeks.
+  writeFile("/test-orphan.lua", "-- left over from an older version\n")
+  writeFile(RECORD, [[return { version = "1.0", branch = "main",
+    repo = "Gizmo0320/CCprograms",
+    files = { "test-orphan.lua", "pilot.lua" } }]])
+
+  local r = runInstall{ args = { "update", "main", "Gizmo0320/CCprograms", "--yes" } }
+  check(said(r, "not any more"), "an orphan is noticed")
+  check(said(r, "test-orphan.lua"), "and named")
+  check(not fs.exists("/test-orphan.lua"), "and deleted once you agree")
+  check(fs.exists("/pilot.lua"), "while everything still in the manifest stays")
 end
 
 do
-  -- Enter through everything keeps what is already there.
-  local r = runInstall{
-    label = "Kestrel",
-    answers = { "", "", "", "" },
-    args = { "main", "Gizmo0320/CCprograms" },
-  }
-  check(os.getComputerLabel() == "Kestrel", "enter keeps the existing name",
-        os.getComputerLabel())
-  check(not fs.exists(OVERRIDES), "and the existing defaults")
+  -- Declined, because an orphan is harmless sitting there and deleting a file
+  -- somebody has started keeping their own notes in would be a poor trade.
+  writeFile("/test-orphan.lua", "-- mine now\n")
+  writeFile(RECORD, [[return { version = "1.0", files = { "test-orphan.lua" } }]])
+
+  os.queueEvent("char", "n")
+  local r = runInstall{ args = { "update", "main", "Gizmo0320/CCprograms" } }
+  check(fs.exists("/test-orphan.lua"), "and left alone if you say no")
+  fs.delete("/test-orphan.lua")
+end
+
+--------------------------------------------------------------------------------
+section("what it leaves alone, and what it hands over to")
+--------------------------------------------------------------------------------
+
+do
+  -- The whole point of the rewrite. A fresh computer is installed and then
+  -- handed to the configurator, because the installer no longer knows how to
+  -- ask any of the questions itself.
+  fresh()
+  local r = runInstall{ args = { "install", "main", "Gizmo0320/CCprograms", "--yes" } }
+
+  check(said(r, "set this computer up"), "a fresh install says what happens next")
+  check(r.handedOff:find("configure", 1, true) ~= nil,
+        "and hands over to the configurator", r.handedOff)
+  check(r.handedOff:find("--wizard", 1, true) ~= nil,
+        "in wizard mode, because nothing has been answered yet", r.handedOff)
+  check(not said(r, "Network name?"),
+        "and it never asks a configuration question itself")
 end
 
 do
-  -- The name rides in every frame and is drawn in narrow columns.
-  local r = runInstall{
-    args = { "main", "Gizmo0320/CCprograms", "--net=aero", "--channel=1618",
-             "--role=pilot", "--name=My Ship!! <>" },
-  }
-  check(os.getComputerLabel() == "MyShip",
-        "odd characters are stripped from a name", os.getComputerLabel())
+  -- An update on a computer somebody has already set up asks nothing and
+  -- changes nothing about it. Dropping a working tower into a wizard because it
+  -- fetched a new pilot.lua would be an unpleasant surprise.
+  writeFile(OVERRIDES, 'return { role = "server", channel = 4300, '
+    .. 'protocol = "north", configured = "1.0" }')
+
+  local r = runInstall{ args = { "update", "main", "Gizmo0320/CCprograms", "--yes" } }
+  check(said(r, "left alone"), "an update leaves your settings alone")
+  check(r.handedOff == "", "and does not run the configurator", r.handedOff)
+
+  local values = loadfile(OVERRIDES)()
+  check(values.channel == 4300 and values.protocol == "north",
+        "and the file is untouched", values.channel)
 end
 
 do
-  -- A pilot is told what to do next, because it cannot fly until probe has run
-  -- and nothing else in the program says so.
+  -- The three files nobody downloaded. A hull tuned over an evening is worth
+  -- more than the program, and none of them are in manifest.txt for exactly
+  -- this reason.
+  writeFile("/craft.cfg", "-- mine\nreturn { controls = {}, mix = {} }\n")
+  local before = readFile("/craft.cfg")
+
+  runInstall{ args = { "update", "main", "Gizmo0320/CCprograms", "--yes" } }
+  check(readFile("/craft.cfg") == before, "an update never touches /craft.cfg")
+
   fs.delete("/craft.cfg")
-  local r = runInstall{
-    args = { "main", "Gizmo0320/CCprograms", "--net=aero", "--channel=1618",
-             "--role=pilot", "--name=Kestrel" },
-  }
-  check(said(r, "probe"), "a fresh pilot is told to run probe next")
-  check(not fs.exists("/craft.cfg"),
-        "and the installer does not guess at a hull it has never seen")
+end
+
+--------------------------------------------------------------------------------
+section("uninstall")
+--------------------------------------------------------------------------------
+
+do
+  -- Driven against a record naming throwaway files, because a real uninstall
+  -- would delete the tree the suite is running from.
+  writeFile("/test-gone-a.lua", "-- a\n")
+  writeFile("/test-gone-b.lua", "-- b\n")
+  writeFile(RECORD, [[return { version = "1.1",
+    files = { "test-gone-a.lua", "test-gone-b.lua" } }]])
+
+  fs.delete(OVERRIDES)
+  fs.delete("/craft.cfg")
+
+  local r = runInstall{ args = { "uninstall", "--yes" } }
+  check(said(r, "Removed"), "uninstall says what it removed")
+  check(not fs.exists("/test-gone-a.lua"), "and the files are gone")
+  check(not fs.exists("/test-gone-b.lua"), "all of them")
+  check(not fs.exists(RECORD), "and the record with them")
+  check(fs.exists("/pilot.lua"),
+        "while anything it never installed is left where it is")
+end
+
+do
+  -- Your own files are asked about separately and last.
+  writeFile("/craft.cfg", "-- mine\nreturn { controls = {}, mix = {} }\n")
+  writeFile("/test-gone-c.lua", "-- c\n")
+  writeFile(RECORD, [[return { version = "1.1", files = { "test-gone-c.lua" } }]])
+
+  -- Yes to removing the program, no to removing the hull.
+  os.queueEvent("char", "y")
+  os.queueEvent("char", "n")
+  local r = runInstall{ args = { "uninstall" } }
+
+  check(not fs.exists("/test-gone-c.lua"), "the program goes")
+  check(said(r, "left alone"), "and your own files are listed as kept")
+  check(fs.exists("/craft.cfg"),
+        "and a hull tuned over an evening survives saying no")
+
+  fs.delete("/craft.cfg")
+  fs.delete("/test-gone-c.lua")
+end
+
+do
+  local r = runInstall{ args = { "uninstall", "--yes" } }
+  check(said(r, "Nothing here was installed"),
+        "uninstalling with no record says so rather than guessing at files")
 end
 
 --------------------------------------------------------------------------------
@@ -344,6 +409,8 @@ end
 -- overrides file behind: lib/config is already loaded and would not read it now,
 -- but the next run of the whole suite would.
 fs.delete(OVERRIDES)
+fs.delete(RECORD)
+fs.delete("/craft.cfg")
 os.setComputerLabel(realLabel)
 
 say("")
